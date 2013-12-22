@@ -16,7 +16,7 @@
  * GNU Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with GPRSbee.  If not, see
+ * License along with the XRF library.  If not, see
  * <http://www.gnu.org/licenses/>.
  */
 
@@ -25,8 +25,11 @@
 
 enum {
   XRF_OK = 0,
+  XRF_NOT_OK,                   // Failed to see OK
   XRF_TIMEOUT,
   XRF_MAXRETRY,
+  XRF_FAIL_CMDMODE,             // Failed to enter command mode (+++)
+  XRF_NOT_IN_CMDMODE,           // Attempting a command while not in Command Mode
   XRF_UNKNOWN,
 };
 
@@ -35,10 +38,14 @@ class XRF
 public:
   void init(uint16_t devID, Stream &stream,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
+
+  uint8_t leaveCmndMode();
+
   uint8_t setPanID(uint16_t panID);
   uint16_t getPanID();
+
   uint8_t setBaudRate(uint32_t rate);
-  uint8_t setATBD(uint16_t rate);
+  uint8_t setATBD(uint16_t rate) { return setBaudRate(rate); }
   uint32_t getBaudRate();
 
   void setDiag(Stream &stream) { _diagStream = &stream; }
@@ -46,12 +53,13 @@ public:
 private:
   bool readLine(char *buffer, size_t size, uint16_t timeout=2000);
   void flushInput();
-  bool waitForOK(uint16_t timeout=2000);
+  uint8_t waitForOK(uint16_t timeout=2000);
   void sendCommand(const char *cmd);
   uint8_t sendCommandWaitForOK(const char *cmd, uint16_t timeout=2000);
+  bool sendATxGetHexNumber(const char *at, uint32_t *num);
+  uint8_t sendATxSetHexNumber(const char *at, uint32_t num);
 
   uint8_t enterCmndMode();
-  uint8_t leaveCmndMode();
 
   // Small utility to see if we timed out
   static bool isTimedOut(uint32_t ts) { return (long)(millis() - ts) >= 0; }
@@ -72,6 +80,7 @@ private:
   uint16_t _panID;
   uint8_t _nrRetries;
   uint16_t _retryTimeout;
+  bool _inCmndMode;
 };
 
 #endif  /* XRF_H_ */

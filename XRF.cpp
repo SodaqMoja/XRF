@@ -14,7 +14,7 @@
  * GNU Lesser General Public License for more details.
  *
  * You should have received a copy of the GNU Lesser General Public
- * License along with GPRSbee.  If not, see
+ * License along with the XRF library.  If not, see
  * <http://www.gnu.org/licenses/>.
  */
 
@@ -40,11 +40,11 @@ void XRF::init(uint16_t devID, Stream &stream,
 /*
 * Set the PAN ID of the XRF device
 *
-* \return 0 if the operation was successful or else an error code
+* \return XRF_OK if the operation was successful or else an error code
 */
 uint8_t XRF::setPanID(uint16_t panID)
 {
-  return XRF_UNKNOWN;
+  return sendATxSetHexNumber("ATID", panID);
 }
 
 /*
@@ -56,35 +56,12 @@ uint8_t XRF::setPanID(uint16_t panID)
  */
 uint16_t XRF::getPanID()
 {
-  uint8_t status;
-  char buffer[10];
-  char *eptr;
-
-  status = enterCmndMode();
-  if (status != XRF_OK) {
-    return 0xffff;
+  uint32_t val;
+  if (!sendATxGetHexNumber("ATID", &val)) {
+    return -1;
   }
-
-  sendCommand("ATID");
-  // Wait for:
-  //    5AA5<CR>
-  //    OK<CR>
-  if (!readLine(buffer, sizeof(buffer))) {
-    // Timed out
-    return 0xffff;
-  }
-  if (!waitForOK()) {
-    // Missing OK
-    return 0xffff;
-  }
-  uint16_t retval = strtoul(buffer, &eptr, 16);
-  if (eptr == buffer) {
-    // Invalid hex number
-    return 0xffff;
-  }
-
-  leaveCmndMode();      // ignore the result of this
-  return retval;
+  // No validation is done.
+  return val;
 }
 
 /*
@@ -100,11 +77,7 @@ uint16_t XRF::getPanID()
 */
 uint8_t XRF::setBaudRate(uint32_t rate)
 {
-  return XRF_UNKNOWN;
-}
-
-uint8_t XRF::setATBD(uint16_t rate)
-{
+  // TODO
   return XRF_UNKNOWN;
 }
 
@@ -119,35 +92,11 @@ uint8_t XRF::setATBD(uint16_t rate)
  */
 uint32_t XRF::getBaudRate()
 {
-  uint8_t status;
-  char buffer[10];
-  char *eptr;
-
-  status = enterCmndMode();
-  if (status != XRF_OK) {
-    return 0xffff;
+  uint32_t val;
+  if (!sendATxGetHexNumber("ATBD", &val)) {
+    return -1;
   }
-
-  sendCommand("ATBD");
-  // Wait for:
-  //    02580<CR>
-  //    OK<CR>
-  if (!readLine(buffer, sizeof(buffer))) {
-    // Timed out
-    return 0xffff;
-  }
-  if (!waitForOK()) {
-    // Missing OK
-    return 0xffff;
-  }
-  uint16_t retval = strtoul(buffer, &eptr, 16);
-  if (eptr == buffer) {
-    // Invalid hex number
-    return 0xffff;
-  }
-
-  leaveCmndMode();      // ignore the result of this
-  return retval;
+  return val;
 }
 
 //////////////////////////
@@ -162,13 +111,13 @@ void XRF::flushInput()
   }
 }
 
-bool XRF::waitForOK(uint16_t timeout)
+uint8_t XRF::waitForOK(uint16_t timeout)
 {
   char buffer[10];
   if (!readLine(buffer, sizeof(buffer), timeout)) {
-    return false;
+    return XRF_TIMEOUT;
   }
-  return strcmp(buffer, "OK") == 0;
+  return strcmp(buffer, "OK") == 0 ? XRF_OK : XRF_NOT_OK;
 }
 
 /*
@@ -203,10 +152,12 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
       }
     }
   }
+  diagPrintLn(F("readLine timed out"));
   return false;         // This indicates: timed out
 
 ok:
   buffer[len++] = '\0';
+  diagPrint(F("readLine: '")); diagPrint(buffer); diagPrintLn('\'');
   return true;
 }
 
@@ -223,6 +174,18 @@ ok:
  */
 uint8_t XRF::enterCmndMode()
 {
+  uint8_t status;
+  if (_inCmndMode) {
+    // Check if we are really in Command Mode
+    sendCommand("AT");
+    status = waitForOK();
+    if (status == XRF_OK) {
+      return status;
+    }
+    _inCmndMode = false;
+  }
+
+  diagPrintLn(F(">> +++"));
   // delay 1 second
   delay(1000);
   _myStream->print("+++");
@@ -231,14 +194,23 @@ uint8_t XRF::enterCmndMode()
   flushInput();
 
   // wait until it replies with "OK"
-  return waitForOK() ? XRF_OK : XRF_UNKNOWN;
+  status = waitForOK();
+  _inCmndMode = status == XRF_OK;
+  return status;
 }
 
 uint8_t XRF::leaveCmndMode()
 {
+  if (!_inCmndMode) {
+    return XRF_NOT_IN_CMDMODE;
+  }
+
   sendCommand("ATDN");
+
   // wait until it replies with "OK"
-  return waitForOK() ? XRF_OK : XRF_UNKNOWN;
+  uint8_t status = waitForOK();
+  _inCmndMode = false;          // No matter what we get, we're out of Command Mode
+  return status;
 }
 
 void XRF::sendCommand(const char *cmd)
@@ -253,4 +225,79 @@ uint8_t XRF::sendCommandWaitForOK(const char *cmd, uint16_t timeout)
 {
   sendCommand(cmd);
   return waitForOK(timeout);
+}
+
+/*
+ * Send ATcc command and read the value
+ *
+ * \param at the ATcc command
+ * \param num pointer to store the result
+ */
+bool XRF::sendATxGetHexNumber(const char *at, uint32_t *num)
+{
+  uint8_t status;
+  char buffer[10];
+  char *eptr;
+
+  status = enterCmndMode();
+  if (status != XRF_OK) {
+    return false;
+  }
+
+  sendCommand(at);
+  // Wait for:
+  //    5AA5<CR>
+  //    OK<CR>
+  if (!readLine(buffer, sizeof(buffer))) {
+    // Timed out
+    diagPrintLn(F("sendATxGetHexNumber: timed out"));
+    return false;
+  }
+  if ((status = waitForOK()) != XRF_OK ) {
+    // Missing OK
+    diagPrint(F("sendATxGetHexNumber, missing OK ")); diagPrintLn(status);
+    return false;
+  }
+  uint32_t val = strtoul(buffer, &eptr, 16);
+  if (eptr == buffer) {
+    // Invalid hex number
+    diagPrintLn(F("sendATxGetHexNumber: invalid number"));
+    return false;
+  }
+
+  //leaveCmndMode();      // ignore the result of this
+
+  if (num) {
+    *num = val;
+  }
+  return true;
+}
+
+/*
+ * Send the AT command plus the new value
+ *
+ * \param at the ATcc command
+ * \param num pointer to store the result
+ */
+uint8_t XRF::sendATxSetHexNumber(const char *at, uint32_t num)
+{
+  uint8_t status;
+  char buffer[15];      // Should be big enough for "AT0hhhhhhhh"
+  char *ptr;
+
+  status = enterCmndMode();
+  if (status != XRF_OK) {
+    return false;
+  }
+
+  strcpy(buffer, at);
+  strcat(buffer, "0");
+  ptr = buffer + strlen(buffer);
+  ultoa(num, ptr, 16);
+  sendCommand(buffer);
+  if ((status = waitForOK()) != XRF_OK ) {
+    // Missing OK
+    diagPrint(F("sendATxSetHexNumber, missing OK: ")); diagPrintLn(status);
+  }
+  return status;
 }
