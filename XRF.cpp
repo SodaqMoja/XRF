@@ -67,18 +67,17 @@ uint16_t XRF::getPanID()
 /*
 * Set the baud rate
 *
-* This function sets the baudrate of the uart and also the XRF.
+* This function sets the baud rate of the uart and also the XRF.
 * Be careful with this, because if somehow a mismatch is created
 * it will be hard to correct it once the XRF configuration
 * is made permanent.
 *
-* \param rate is the baudrate
+* \param rate is the baud rate
 * \return XRF_OK if the operation was successful or else an error code
 */
 uint8_t XRF::setBaudRate(uint32_t rate)
 {
-  // TODO
-  return XRF_UNKNOWN;
+  return sendATxSetHexNumber("ATBD", rate);
 }
 
 /*
@@ -88,13 +87,48 @@ uint8_t XRF::setBaudRate(uint32_t rate)
  * TODO The above list is from the XRF AT Command Reference. Find out if other
  * baud rates are possible.
  *
- * \return the baudrate
+ * \return the baud rate
  */
 uint32_t XRF::getBaudRate()
 {
   uint32_t val;
   if (!sendATxGetHexNumber("ATBD", &val)) {
     return -1;
+  }
+  return val;
+}
+
+/*
+* Set the radio data rate
+*
+* This function sets the radio data rate.
+*
+* \param rate is the radio data rate
+* \return XRF_OK if the operation was successful or else an error code
+*/
+uint8_t XRF::setDataRate(uint8_t rate)
+{
+  return sendATxSetHexNumber("ATDR", rate);
+}
+
+/*
+ * Get the current radio data rate (1, 2, 3, 4, 5)
+ *
+ * The AT Command Reference says:
+ *   1 = 250k (default)
+ *   2 = 38.4k
+ *   3 = 1.2k
+ *   4 = 100k
+ *   5 = 50k
+ *
+ * \return the radio data rate (1, 2, 3, 4, 5)
+ * \return 0 this indicates an error
+ */
+uint8_t XRF::getDataRate()
+{
+  uint32_t val;
+  if (!sendATxGetHexNumber("ATDR", &val)) {
+    return 0;
   }
   return val;
 }
@@ -157,7 +191,7 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
 
 ok:
   buffer[len++] = '\0';
-  diagPrint(F("readLine: '")); diagPrint(buffer); diagPrintLn('\'');
+  //diagPrint(F("readLine: '")); diagPrint(buffer); diagPrintLn('\'');
   return true;
 }
 

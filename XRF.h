@@ -45,8 +45,12 @@ public:
   uint16_t getPanID();
 
   uint8_t setBaudRate(uint32_t rate);
-  uint8_t setATBD(uint16_t rate) { return setBaudRate(rate); }
+  uint8_t setATBD(uint32_t rate) { return setBaudRate(rate); }
   uint32_t getBaudRate();
+
+  uint8_t setDataRate(uint8_t rate);
+  uint8_t setATDR(uint8_t rate) { return setDataRate(rate); }
+  uint8_t getDataRate();
 
   void setDiag(Stream &stream) { _diagStream = &stream; }
 
