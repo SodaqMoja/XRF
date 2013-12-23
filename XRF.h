@@ -30,12 +30,15 @@ enum {
   XRF_MAXRETRY,
   XRF_FAIL_CMDMODE,             // Failed to enter command mode (+++)
   XRF_NOT_IN_CMDMODE,           // Attempting a command while not in Command Mode
+  XRF_NOT_IMPLEMENTED,          // Function not yet implemented
   XRF_UNKNOWN,
 };
 
 class XRF
 {
 public:
+  XRF();
+
   void init(uint16_t devID, Stream &stream,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
 
@@ -51,6 +54,11 @@ public:
   uint8_t setDataRate(uint8_t rate);
   uint8_t setATDR(uint8_t rate) { return setDataRate(rate); }
   uint8_t getDataRate();
+
+  uint8_t sendData(const char *data, uint16_t timeout=3000);
+  uint8_t receiveData(const char *prefix, char *data, size_t size, uint16_t timeout=3000);
+  uint8_t receiveData(char *data, size_t size, uint16_t timeout=3000);
+  int available() { return _myStream->available(); }
 
   void setDiag(Stream &stream) { _diagStream = &stream; }
 
@@ -72,13 +80,14 @@ private:
   void diagPrintLn(const char *str) { if (_diagStream) _diagStream->println(str); }
   void diagPrint(const __FlashStringHelper *str) { if (_diagStream) _diagStream->print(str); }
   void diagPrintLn(const __FlashStringHelper *str) { if (_diagStream) _diagStream->println(str); }
-  void diagPrint(int i) { if (_diagStream) _diagStream->print(i); }
-  void diagPrintLn(int i) { if (_diagStream) _diagStream->println(i); }
+  void diagPrint(int i, int base=DEC) { if (_diagStream) _diagStream->print(i, base); }
+  void diagPrintLn(int i, int base=DEC) { if (_diagStream) _diagStream->println(i, base); }
   void diagPrint(char c) { if (_diagStream) _diagStream->print(c); }
   void diagPrintLn(char c) { if (_diagStream) _diagStream->println(c); }
 
 private:
   Stream *_myStream;
+  char _eol;
   Stream *_diagStream;
   uint16_t _devID;
   uint16_t _panID;

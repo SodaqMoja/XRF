@@ -21,6 +21,18 @@
 #include <Arduino.h>
 #include "XRF.h"
 
+XRF::XRF()
+{
+  _myStream = 0;
+  _eol = '\n';
+  _diagStream = 0;
+  _devID = 0;
+  _panID = 0x5AA5;
+  _nrRetries = 3;
+  _retryTimeout = 2000;
+  _inCmndMode = false;
+}
+
 /*
 * Initialize XRF
 *
@@ -35,6 +47,70 @@ void XRF::init(uint16_t devID, Stream &stream,
 {
   _myStream = &stream;
   _devID = devID;
+}
+
+/*
+* Send ASCII data via the XRF device
+*
+* The data is sent as ASCII. The CRC is appended and an end-of-line
+* is added too.
+*
+* \param data is a pointer to the ASCII data
+* \param timeout the maximum number of milliseconds for the whole operation
+* \return 0 if the operation was successful or else an error code
+*/
+uint8_t XRF::sendData(const char *data, uint16_t timeout)
+{
+  diagPrint(F("SendData: '")); diagPrint(data); diagPrintLn('\'');
+  _myStream->print(data);
+  _myStream->print(_eol);
+  return XRF_NOT_IMPLEMENTED;
+}
+
+/*
+ * Wait for a line of text that starts with the prefix
+ *
+ * \param prefix the line that we want starts with this
+ * \param data a pointer to store the result
+ * \param size the maximum number of bytes to store in the result buffer (including \0)
+ * \param timeout the maximum number of milliseconds for the whole operation
+ */
+uint8_t XRF::receiveData(const char *prefix, char *data, size_t size, uint16_t timeout)
+{
+  diagPrint(F("receiveData: '")); diagPrint(prefix); diagPrintLn('\'');
+  uint32_t ts_max = millis() + timeout;
+  while (!isTimedOut(ts_max)) {
+    if (readLine(data, size)) {
+      // Does the prefix match?
+      if (strncmp(data, prefix, strlen(prefix)) == 0) {
+        // Yes, it does.
+        // TODO Verify checksum
+        return XRF_OK;
+      }
+      // Keep on trying
+    }
+  }
+  return XRF_TIMEOUT;
+}
+
+/*
+ * Wait for a line of text with a checksum
+ *
+ * First step is to simply receive a line. Then it tries
+ * to find a checksum at the end of the line. The checksum
+ * is a comma and a number. The number is the checksum of
+ * all the characters in the line upto (not including the
+ * comma and the number)
+ *
+ * \param data a pointer to store the result
+ * \param size the maximum number of bytes to store in the result buffer (including \0)
+* \param timeout the maximum number of milliseconds for the whole operation
+ */
+uint8_t XRF::receiveData(char *data, size_t size, uint16_t timeout)
+{
+  // Read a line
+  // TODO Check and strip CRC
+  return readLine(data, size, timeout) ? XRF_OK : XRF_TIMEOUT;
 }
 
 /*
@@ -141,7 +217,7 @@ void XRF::flushInput()
 {
   int c;
   while ((c = _myStream->read()) >= 0) {
-    //diagPrint((char)c);
+    //diagPrintLn(c, HEX);
   }
 }
 
@@ -155,31 +231,41 @@ uint8_t XRF::waitForOK(uint16_t timeout)
 }
 
 /*
- * Read a line from the input
+ * Read a non-empty line from the input
  *
- * This function should only be called when in command mode. Otherwise
- * it doesn't make sense, because the data on the air is most likely
- * just binary.
+ * \param buffer pointer to store the result
+ * \param size how many bytes can be stored in the result (including \0)
+ * \param timeout
  */
 bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
 {
   size_t len;
+  bool seenCR = false;
+  uint32_t ts_waitLF = 0;
+  int c;
 
   len = 0;
   uint32_t ts_max = millis() + timeout;
   while (!isTimedOut(ts_max)) {
-    int c = _myStream->read();
+    if (seenCR) {
+      c = _myStream->peek();
+      if (c != '\n' || isTimedOut(ts_waitLF)) {
+        // Line ended with just <CR>. That's OK too.
+        goto ok;
+      }
+    }
+    c = _myStream->read();
     if (c < 0) {
       continue;
     }
+    seenCR = c == '\r';
     if (c == '\r') {
+      ts_waitLF = millis() + 50;       // Wait a short while for an optional LF
+    } else if (c == '\n') {
       if (len > 0) {
         goto ok;
       }
       // An empty line. Continue to wait.
-    } else if (c == '\n') {
-      // Skip LF.
-      // We're expecting everything to be terminated with just a CR
     } else {
       if (len < size - 1) {
         buffer[len++] = c;
