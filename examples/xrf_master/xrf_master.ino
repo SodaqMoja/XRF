@@ -46,7 +46,8 @@ typedef struct SlaveInfo_t SlaveInfo_t;
 SlaveInfo_t slaves[4];
 size_t nrSlaves;
 
-uint32_t nextUpload = 1388011383;
+uint32_t nextUpload = 1388099999;
+uint16_t uploadInterval = 60 * 60;
 
 //################  forward declare  ###############
 void readCommand();
@@ -156,11 +157,15 @@ void srvHello(const char *name)
 
   DIAGPRINT(F("srvHello: '")); DIAGPRINT(name); DIAGPRINTLN('\'');
 
-  // Store this slave ID in a list
-  if (!addSlave(name)) {
-    DIAGPRINTLN(F("srvHello slave name not accepted"));
-    return;
+  int slaveIx = findSlave(name);
+  if (slaveIx < 0) {
+    // Store this slave ID in a list
+    if (!addSlave(name)) {
+      DIAGPRINTLN(F("srvHello slave name not accepted"));
+      return;
+    }
   }
+
 
   // TODO Send an acknowledge
   strcpy(line, name);
@@ -223,6 +228,9 @@ void srvNext(const char *name)
   *ptr++ = ',';
   uint32_t ts = nextUpload + slaves[slaveIx].uploadOffset;
   ultoa(ts, ptr, 10);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  ultoa(uploadInterval, ptr, 10);
   (void)xrf.sendData(line);
 }
 

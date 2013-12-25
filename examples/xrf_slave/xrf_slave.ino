@@ -7,6 +7,7 @@
 
 #define XRF_DEMO_PANID          0x5AA5
 #define XRF_DEMO_REQUEST_PREFIX "M,"
+#define MAX_FAILED              30      // After this many failed, reset doneHello
 
 #include <Arduino.h>
 #include <SoftwareSerial.h>
@@ -44,12 +45,17 @@ XRF xrf;
 char slaveName[10];     // This must hold 'S' plus a 8 hexdigit number and a \0
 bool doneHello;
 bool doneTs;
+uint32_t nextUpload;
+uint16_t uploadInterval;
+uint16_t failedCounter;
 
 //################  forward declare  ###############
 void createSlaveName(uint8_t *buffer, size_t size);
 void doSendHello();
 void doSendTs();
+void doAskUpload();
 
+void bumpFailedCounter();
 void dumpBuffer(uint8_t * buf, size_t size);
 
 void setup()
@@ -86,21 +92,37 @@ FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
 
 void loop()
 {
-  if (!doneTs) {
-    // Don't flood the XRF channel
-    static int counter;
-    if (++counter > 10) {
-      counter = 0;
-
-      if (!doneHello) {
-        doSendHello();
-      }
-      if (doneHello) {
-        doSendTs();
-      }
-    } else {
-      delay(100);
+  if (!doneHello) {
+    doSendHello();
+    if (!doneHello) {
+      delay(1000);
     }
+    return;
+  }
+
+  if (!doneTs) {
+    doSendTs();
+    if (!doneTs) {
+      delay(1000);
+    }
+    return;
+  }
+
+  if (nextUpload == 0) {
+    // We need to ask the master when the next upload is
+    doAskUpload();
+  }
+
+  if (nextUpload) {
+    // Is it time for the next upload?
+    uint32_t ts = rtc.now().getEpoch();
+    if (ts > nextUpload) {
+      // TODO Do next upload
+    }
+  } else {
+    // If not initialized then wait a second before retrying
+    delay(1000);
+    return;
   }
 }
 
@@ -120,7 +142,6 @@ void doSendHello()
   ptr += strlen(ptr);
   *ptr++ = ',';
   strcpy(ptr, slaveName);
-
   (void)xrf.sendData(line);
 
   // Wait until we get a line starting with slave name
@@ -131,13 +152,15 @@ void doSendHello()
   *ptr = '\0';
   status = xrf.receiveData(line, data, sizeof(data));
   if (status == XRF_OK) {
+    // Skip our own slave name
     ptr = data + strlen(line);
     if (strncmp(ptr, "ack", 3) == 0) {
       doneHello = true;
       DIAGPRINTLN("receive hello ack: ");
     }
   } else {
-    DIAGPRINT("receiveData hello failed: "); DIAGPRINTLN(status);
+    //DIAGPRINT("receiveData hello failed: "); DIAGPRINTLN(status);
+    bumpFailedCounter();
   }
 }
 
@@ -160,7 +183,6 @@ void doSendTs()
   ptr += strlen(ptr);
   *ptr++ = ',';
   strcpy(ptr, slaveName);
-
   (void)xrf.sendData(line);
 
   // Wait until we get a line starting with slave name
@@ -171,16 +193,76 @@ void doSendTs()
   *ptr = '\0';
   status = xrf.receiveData(line, data, sizeof(data));
   if (status == XRF_OK) {
+    DIAGPRINT(F("ts: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
+    // Skip our own slave name
     ptr = data + strlen(line);
     // Expecting a number
-    DIAGPRINT(F("ts: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
     uint32_t ts = strtoul(ptr, &eptr, 0);
     if (eptr != ptr) {
       rtc.setEpoch(ts);
       doneTs = true;
     }
   } else {
-    DIAGPRINT("receiveData ts failed: "); DIAGPRINTLN(status);
+    //DIAGPRINT("receiveData ts failed: "); DIAGPRINTLN(status);
+    bumpFailedCounter();
+  }
+}
+
+/*
+ * Send the "next" command
+ *
+ * The answer from the master should have the timestamp for the
+ * * next upload, and also the upload interval (in seconds)
+ */
+void doAskUpload()
+{
+  uint8_t status;
+  char line[60];
+  char data[60];
+  char *ptr = line;
+  char *eptr;
+
+  strcpy(ptr, XRF_DEMO_REQUEST_PREFIX);
+  ptr += strlen(ptr);
+  strcpy(ptr, "next");
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  strcpy(ptr, slaveName);
+  (void)xrf.sendData(line);
+
+  // Wait until we get a line starting with slave name
+  ptr = line;
+  strcpy(ptr, slaveName);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  *ptr = '\0';
+  status = xrf.receiveData(line, data, sizeof(data));
+  if (status == XRF_OK) {
+    DIAGPRINT(F("next: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
+    // Skip our own slave name
+    ptr = data + strlen(line);
+    DIAGPRINT(F("next1: '")); DIAGPRINT(ptr); DIAGPRINTLN('\'');
+    // Expecting a number
+    uint32_t ts = strtoul(ptr, &eptr, 0);
+    if (eptr != ptr) {
+      nextUpload = ts;
+      DIAGPRINT("nextUpload: "); DIAGPRINTLN(nextUpload);
+      if (*eptr == ',') {
+        ++eptr;
+        ptr = eptr;
+        ts = strtoul(ptr, &eptr, 0);
+        if (eptr != ptr) {
+          uploadInterval = ts;
+          DIAGPRINT("uploadInterval: "); DIAGPRINTLN(uploadInterval);
+        }
+      }
+    } else {
+      // Invalid number
+      //DIAGPRINTLN("Invalid number");
+    }
+  } else {
+    //DIAGPRINT("receiveData next failed: "); DIAGPRINTLN(status);
+    bumpFailedCounter();
   }
 }
 
@@ -212,6 +294,14 @@ void createSlaveName(uint8_t *buffer, size_t size)
   ptr += 4;
   myUtoa(crc2, ptr);
   // String now has a \0 terminator
+}
+
+void bumpFailedCounter()
+{
+  if (++failedCounter > MAX_FAILED) {
+    doneHello = false;
+    doneTs = false;
+  }
 }
 
 void dumpBuffer(uint8_t * buf, size_t size)
