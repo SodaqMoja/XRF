@@ -18,6 +18,8 @@
  * <http://www.gnu.org/licenses/>.
  */
 
+#include <stdint.h>
+#include <util/crc16.h>
 #include <Arduino.h>
 #include "XRF.h"
 
@@ -62,8 +64,12 @@ void XRF::init(uint16_t devID, Stream &stream,
 uint8_t XRF::sendData(const char *data, uint16_t timeout)
 {
   diagPrint(F("SendData: '")); diagPrint(data); diagPrintLn('\'');
+  uint16_t crc = crc16_ccitt((uint8_t *)data, strlen(data));
   _myStream->print(data);
+  _myStream->print(',');
+  _myStream->print(crc);
   _myStream->print(_eol);
+
   return XRF_NOT_IMPLEMENTED;
 }
 
@@ -77,7 +83,7 @@ uint8_t XRF::sendData(const char *data, uint16_t timeout)
  */
 uint8_t XRF::receiveData(const char *prefix, char *data, size_t size, uint16_t timeout)
 {
-  diagPrint(F("receiveData: '")); diagPrint(prefix); diagPrintLn('\'');
+  //diagPrint(F("receiveData prefix: '")); diagPrint(prefix); diagPrintLn('\'');
   uint32_t ts_max = millis() + timeout;
   while (!isTimedOut(ts_max)) {
     if (readLine(data, size)) {
@@ -85,7 +91,17 @@ uint8_t XRF::receiveData(const char *prefix, char *data, size_t size, uint16_t t
       if (strncmp(data, prefix, strlen(prefix)) == 0) {
         // Yes, it does.
         // TODO Verify checksum
-        return XRF_OK;
+        uint16_t crc;
+        char *cptr;
+        if (findCrc(data, &crc, &cptr)) {
+          //diagPrint(F("receiveData crc: ")); diagPrintLn(crc);
+          // Strip the checksum
+          *cptr = '\0';
+          uint16_t crc1 = crc16_ccitt((uint8_t *)data, strlen(data));
+          //diagPrint(F("receiveData: '")); diagPrint(data); diagPrintLn('\'');
+          //diagPrint(F("receiveData checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
+          return XRF_OK;
+        }
       }
       // Keep on trying
     }
@@ -420,4 +436,49 @@ uint8_t XRF::sendATxSetHexNumber(const char *at, uint32_t num)
     diagPrint(F("sendATxSetHexNumber, missing OK: ")); diagPrintLn(status);
   }
   return status;
+}
+
+/*
+ * Find the CRC in the line of text
+ *
+ * First step is to find the last comma. And if it is
+ * found return the character after it.
+ * The help stripping the CRC later we also return the pointer
+ * to the comma before the checksum.
+ *
+ * \param txt a text string
+ * \param crc pointer for the result
+ * \param cptr pointer to where CRC starts (the comma before the checksum)
+ * \return true if a CRC was found
+ */
+bool XRF::findCrc(char *txt, uint16_t *crc, char **cptr)
+{
+  char *ptr;
+  ptr = txt + strlen(txt);
+  while (ptr > txt) {
+    *cptr = ptr - 1;
+    if (**cptr == ',') {
+      char *eptr;
+      *crc = strtoul(ptr, &eptr, 0);
+      if (eptr != ptr) {
+        return true;
+      }
+      break;
+    }
+    --ptr;
+  }
+
+  return false;
+}
+
+/*
+ * \brief Compute CRC16 of a byte buffer
+ */
+uint16_t XRF::crc16_ccitt(uint8_t * buf, size_t len)
+{
+    uint16_t crc = 0xFFFF;
+    while (len--) {
+        crc = _crc_ccitt_update(crc, *buf++);
+    }
+    return crc;
 }

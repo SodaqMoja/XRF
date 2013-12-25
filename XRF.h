@@ -76,12 +76,18 @@ private:
   // Small utility to see if we timed out
   static bool isTimedOut(uint32_t ts) { return (long)(millis() - ts) >= 0; }
 
+  bool findCrc(char *txt, uint16_t *crc, char **cptr);
+  uint16_t crc16_ccitt(uint8_t * buf, size_t len);
+
+  // TODO There must be an easier way to do this.
   void diagPrint(const char *str) { if (_diagStream) _diagStream->print(str); }
   void diagPrintLn(const char *str) { if (_diagStream) _diagStream->println(str); }
   void diagPrint(const __FlashStringHelper *str) { if (_diagStream) _diagStream->print(str); }
   void diagPrintLn(const __FlashStringHelper *str) { if (_diagStream) _diagStream->println(str); }
   void diagPrint(int i, int base=DEC) { if (_diagStream) _diagStream->print(i, base); }
   void diagPrintLn(int i, int base=DEC) { if (_diagStream) _diagStream->println(i, base); }
+  void diagPrint(unsigned int u, int base=DEC) { if (_diagStream) _diagStream->print(u, base); }
+  void diagPrintLn(unsigned int u, int base=DEC) { if (_diagStream) _diagStream->println(u, base); }
   void diagPrint(char c) { if (_diagStream) _diagStream->print(c); }
   void diagPrintLn(char c) { if (_diagStream) _diagStream->println(c); }
 
