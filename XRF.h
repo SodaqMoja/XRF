@@ -39,7 +39,7 @@ class XRF
 public:
   XRF();
 
-  void init(uint16_t devID, Stream &stream,
+  void init(Stream &stream,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
 
   uint8_t leaveCmndMode();
@@ -95,7 +95,6 @@ private:
   Stream *_myStream;
   char _eol;
   Stream *_diagStream;
-  uint16_t _devID;
   uint16_t _panID;
   uint8_t _nrRetries;
   uint16_t _retryTimeout;

@@ -28,7 +28,6 @@ XRF::XRF()
   _myStream = 0;
   _eol = '\n';
   _diagStream = 0;
-  _devID = 0;
   _panID = 0x5AA5;
   _nrRetries = 3;
   _retryTimeout = 2000;
@@ -38,17 +37,15 @@ XRF::XRF()
 /*
 * Initialize XRF
 *
-* \param devID the identifier used in data packets
 * \param uart an instance of Stream for the connected XRF module
 * \param nrRetries how often to try to send a data packet when no ACK is received
 * \param retryTimeout number of milliseconds before retrying
 * \return nothing
 */
-void XRF::init(uint16_t devID, Stream &stream,
+void XRF::init(Stream &stream,
                 uint8_t nrRetries, uint16_t retryTimeout)
 {
   _myStream = &stream;
-  _devID = devID;
 }
 
 /*

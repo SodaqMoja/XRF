@@ -5,8 +5,7 @@
  */
 
 
-#define XRF_DEMO_PANID      0x5AA5
-#define XRF_DEMO_MASTER         1
+#define XRF_DEMO_PANID          0x5AA5
 #define XRF_DEMO_REQUEST_PREFIX "M,"
 
 #include <string.h>
@@ -38,16 +37,31 @@ SoftwareSerial diagport(DIAGPORT_RX, DIAGPORT_TX);
 
 XRF xrf;
 
+struct SlaveInfo_t
+{
+  char name[10];
+  uint16_t uploadOffset;
+};
+typedef struct SlaveInfo_t SlaveInfo_t;
+SlaveInfo_t slaves[4];
+size_t nrSlaves;
+
+uint32_t nextUpload = 1388011383;
+
 //################  forward declare  ###############
 void readCommand();
 int findCmndIx(const char *data);
-void srvHello(const char *data);
+void srvHello(const char *name);
 void srvTs(const char *data);
+void srvNext(const char *data);
+
+int findSlave(const char *name);
+bool addSlave(const char *name);
 
 void setup()
 {
   Serial.begin(9600);
-  xrf.init(XRF_DEMO_MASTER, Serial);
+  xrf.init(Serial);
 #ifdef ENABLE_DIAG
   diagport.begin(9600);
   xrf.setDiag(diagport);
@@ -61,6 +75,7 @@ void setup()
   xrf.setPanID(XRF_DEMO_PANID);
   (void)xrf.leaveCmndMode();
 
+  // While debugging, send the message to the world.
   delay(1000);
   Serial.println("XRF master");
 }
@@ -69,7 +84,7 @@ void loop()
 {
   int nr = xrf.available();
   if (nr > 0) {
-    DIAGPRINT(F("data available: ")); DIAGPRINTLN(nr);
+    //DIAGPRINT(F("data available: ")); DIAGPRINTLN(nr);
     readCommand();
   }
 }
@@ -83,6 +98,7 @@ typedef struct Command_t Command_t;
 Command_t commands[] = {
     {"hello", srvHello},
     {"ts", srvTs},
+    {"next", srvNext},
 };
 
 int findCmndIx(const char *data)
@@ -103,7 +119,7 @@ void readCommand()
   char *ptr;
   int len;
 
-  status = xrf.receiveData(data, sizeof(data));
+  status = xrf.receiveData(XRF_DEMO_REQUEST_PREFIX, data, sizeof(data));
   if (status == XRF_OK) {
     DIAGPRINT(F("data received: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
     //Serial.print(F("data received: '")); Serial.print(data); Serial.println('\'');
@@ -115,6 +131,7 @@ void readCommand()
       int cmdIx = findCmndIx(ptr);
       if (cmdIx >= 0) {
         if (commands[cmdIx].func) {
+          // Skip the command text and the comma
           ptr += strlen(commands[cmdIx].cmd);
           if (*ptr == ',') {
             ++ptr;
@@ -133,16 +150,20 @@ void readCommand()
  *   <slave id>
  * The answer is to repeat that part and to append ",ack"
  */
-void srvHello(const char *data)
+void srvHello(const char *name)
 {
   char line[60];
 
-  DIAGPRINT(F("srvHello: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
+  DIAGPRINT(F("srvHello: '")); DIAGPRINT(name); DIAGPRINTLN('\'');
 
-  // TODO Store this slave ID in a list
+  // Store this slave ID in a list
+  if (!addSlave(name)) {
+    DIAGPRINTLN(F("srvHello slave name not accepted"));
+    return;
+  }
 
   // TODO Send an acknowledge
-  strcpy(line, data);
+  strcpy(line, name);
   strcat(line, ",ack");
   (void)xrf.sendData(line);
 }
@@ -152,20 +173,82 @@ void srvHello(const char *data)
  *
  * The format of the remainder of the line must be:
  *   <slave id>
- * The answer is to repeat that part and to append ",ack"
+ * The answer is to repeat that part and to append the current timestamp
  */
-void srvTs(const char *data)
+void srvTs(const char *name)
 {
   char line[60];
   char *ptr;
 
-  DIAGPRINT(F("srvTs: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
+  DIAGPRINT(F("srvTs: '")); DIAGPRINT(name); DIAGPRINTLN('\'');
+
+  int slaveIx = findSlave(name);
+  if (slaveIx < 0) {
+    DIAGPRINTLN(F("srvTs unknown slave"));
+    return;
+  }
 
   ptr = line;
-  strcpy(ptr, data);
-  ptr += strlen(data);
+  strcpy(ptr, name);
+  ptr += strlen(name);
   *ptr++ = ',';
   uint32_t ts = rtc.now().getEpoch();
   ultoa(ts, ptr, 10);
   (void)xrf.sendData(line);
+}
+
+/*
+ * Service the "next" command
+ *
+ * The format of the remainder of the line must be:
+ *   <slave id>
+ * The answer is to repeat that part and to append the timestamp for the next upload
+ */
+void srvNext(const char *name)
+{
+  char line[60];
+  char *ptr;
+
+  DIAGPRINT(F("srvNext: '")); DIAGPRINT(name); DIAGPRINTLN('\'');
+
+  int slaveIx = findSlave(name);
+  if (slaveIx < 0) {
+    DIAGPRINTLN(F("srvNext unknown slave"));
+    return;
+  }
+
+  ptr = line;
+  strcpy(ptr, name);
+  ptr += strlen(name);
+  *ptr++ = ',';
+  uint32_t ts = nextUpload + slaves[slaveIx].uploadOffset;
+  ultoa(ts, ptr, 10);
+  (void)xrf.sendData(line);
+}
+
+int findSlave(const char *name)
+{
+  for (size_t i = 0; i < nrSlaves; ++i) {
+    SlaveInfo_t *slave = &slaves[i];
+    if (strcmp(slave->name, name) == 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+bool addSlave(const char *name)
+{
+  if (nrSlaves >= sizeof(slaves) / sizeof(slaves[0])) {
+    // Already reached maximum
+    return false;
+  }
+
+  SlaveInfo_t *next = &slaves[nrSlaves];
+  // This strips the name to length of a maximum of 8.
+  // Perhaps we must refuse this name.
+  memset(next->name, 0, sizeof(next->name));
+  strncpy(next->name, name, sizeof(next->name) - 1);
+  ++nrSlaves;
+  return true;
 }
