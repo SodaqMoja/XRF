@@ -6,8 +6,9 @@
 
 
 #define XRF_DEMO_PANID          0x5AA5
-#define XRF_DEMO_REQUEST_PREFIX "M,"
+#define XRF_REQUEST_PREFIX      "M,"
 #define MAX_FAILED              30      // After this many failed, reset doneHello
+#define ADC_AREF                3.3     // DEFAULT see wiring_analog.c
 
 #include <Arduino.h>
 #include <SoftwareSerial.h>
@@ -23,6 +24,13 @@
 #define DF_MISO         12
 #define DF_SPICLOCK     13
 #define DF_SLAVESELECT  10
+
+#define BATVOLTPIN      A7
+#define BATVOLT_R1      10              // in fact 10M
+#define BATVOLT_R2      2               // in fact 2M
+
+// The Xbee DTR is connected to the XRF sleep pin
+#define XBEE_DTR        7
 
 // Only needed if DIAG is enabled
 #define DIAGPORT_RX     4
@@ -56,9 +64,14 @@ void doSendTs();
 void doAskUpload();
 void doUpload();
 bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size);
+bool sendKeyValueAndWaitForAck(const char *parm, const char *val);
+bool sendKeyValueAndWaitForAck(const char *parm, uint32_t val);
+bool sendKeyValueAndWaitForAck(const char *parm, float val);
 
 void bumpFailedCounter();
 void resetFailedCounter();
+
+float getRealBatteryVoltage();
 void dumpBuffer(uint8_t * buf, size_t size);
 
 void setup()
@@ -88,7 +101,10 @@ FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
     createSlaveName(buffer + 64, 64);
     DIAGPRINT(F("slaveName: '")); DIAGPRINT(slaveName); DIAGPRINTLN('\'');
   }
+  Serial.print("XRF slave ");
+  Serial.println(slaveName);
 
+  xrf.setSleepMode(1, XBEE_DTR);
   xrf.setPanID(XRF_DEMO_PANID);
   (void)xrf.leaveCmndMode();
 }
@@ -114,19 +130,21 @@ void loop()
   if (nextUpload == 0) {
     // We need to ask the master when the next upload is
     doAskUpload();
+    return;
   }
 
-  if (nextUpload) {
-    // Is it time for the next upload?
-    uint32_t ts = rtc.now().getEpoch();
-    if (ts > nextUpload) {
-      // TODO Do next upload
-      doUpload();
-    }
-  } else {
-    // If not initialized then wait a second before retrying
-    delay(1000);
-    return;
+  // Is it time for the next upload?
+  uint32_t ts = rtc.now().getEpoch();
+  if (ts >= nextUpload) {
+    Serial.print("XRF slave ");
+    Serial.print(slaveName);
+    Serial.print(", start wakeup ");
+    Serial.println(ts);
+    // TODO Do next upload
+    doUpload();
+    Serial.print("XRF slave ");
+    Serial.print(slaveName);
+    Serial.println(", done upload");
   }
 
   // Go to sleep
@@ -141,7 +159,6 @@ void doSendHello()
   char *ptr;
 
   if (sendCommandAndWaitForReply("hello", data, sizeof(data))) {
-    // Expecting a number
     ptr = data;
     if (strncmp(ptr, "ack", 3) == 0) {
       doneHello = true;
@@ -168,7 +185,12 @@ void doSendTs()
     // Expecting a number
     uint32_t ts = strtoul(ptr, &eptr, 0);
     if (eptr != ptr) {
-      rtc.setEpoch(ts);
+      if (rtc.now().getEpoch() != ts) {
+        // Update the RTC
+        rtc.setEpoch(ts);
+        // Make sure we request new upload time, because RTC has changed
+        nextUpload = 0;
+      }
       doneTs = true;
     } else {
       //DIAGPRINTLN("Invalid number");
@@ -212,6 +234,24 @@ void doAskUpload()
 }
 
 /*
+ * Send the "batt" command and wait for an "ack"
+ */
+void doSendBatteryLevel()
+{
+  char data[60];
+  char *ptr;
+
+  if (sendCommandAndWaitForReply("batt", data, sizeof(data))) {
+    ptr = data;
+    if (strncmp(ptr, "ack", 3) == 0) {
+      doneHello = true;
+      DIAGPRINTLN("receive batt ack: ");
+    } else {
+    }
+  }
+}
+
+/*
  * Upload data to the master
  *
  * The collected data will be sent to the master, and if it was
@@ -222,6 +262,10 @@ void doUpload()
 {
   // TODO
   DIAGPRINT("doUpload: "); DIAGPRINTLN(uploadInterval);
+
+  float batVolt = getRealBatteryVoltage();
+  sendKeyValueAndWaitForAck("batt", batVolt);
+
   if (uploadInterval) {
     nextUpload += uploadInterval;
   } else {
@@ -229,6 +273,9 @@ void doUpload()
   }
 }
 
+/*
+ * Send a simple command and wait for the reply
+ */
 bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size)
 {
   bool retval = false;
@@ -237,7 +284,7 @@ bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size)
   char *ptr = line;
 
   // A bit clumsy code, because using snprintf causes much larger code size
-  strcpy(ptr, XRF_DEMO_REQUEST_PREFIX);
+  strcpy(ptr, XRF_REQUEST_PREFIX);
   ptr += strlen(ptr);
   strcpy(ptr, cmd);
   ptr += strlen(ptr);
@@ -265,6 +312,72 @@ bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size)
     bumpFailedCounter();
   }
   return retval;
+}
+
+/*
+ * Send a key and value and wait for the reply
+ */
+bool sendKeyValueAndWaitForAck(const char *parm, const char *val)
+{
+  bool retval = false;
+  uint8_t status;
+  char line[60];
+  char data[40];
+  char *ptr = line;
+
+  // A bit clumsy code, because using snprintf causes much larger code size
+  strcpy(ptr, XRF_REQUEST_PREFIX);
+  ptr += strlen(ptr);
+  strcpy(ptr, parm);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  strcpy(ptr, slaveName);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  strcpy(ptr, val);
+  (void)xrf.sendData(line);
+
+  // Wait until we get a line starting with slave name
+  ptr = line;
+  strcpy(ptr, slaveName);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  *ptr = '\0';
+  status = xrf.receiveData(line, data, sizeof(data));
+  if (status == XRF_OK) {
+    resetFailedCounter();
+    // Strip our slave prefix.
+    ptr = data + strlen(line);
+    DIAGPRINT(F("reply: '")); DIAGPRINT(ptr); DIAGPRINTLN('\'');
+    // We're just expecting "ack"
+    if (strcmp(ptr, "ack") == 0) {
+      retval = true;
+    }
+  } else {
+    DIAGPRINT("receiveData failed: "); DIAGPRINTLN(status);
+    bumpFailedCounter();
+  }
+  return retval;
+}
+
+/*
+ * Send a key and value and wait for the reply
+ */
+bool sendKeyValueAndWaitForAck(const char *parm, uint32_t val)
+{
+  char buffer[16];
+  ultoa(val, buffer, 10);
+  return sendKeyValueAndWaitForAck(parm, buffer);
+}
+
+/*
+ * Send a key and value and wait for the reply
+ */
+bool sendKeyValueAndWaitForAck(const char *parm, float val)
+{
+  char buffer[16];
+  dtostrf(val, -1, 2, buffer);
+  return sendKeyValueAndWaitForAck(parm, buffer);
 }
 
 /*
@@ -308,6 +421,21 @@ void bumpFailedCounter()
 void resetFailedCounter()
 {
   failedCounter = 0;
+}
+
+/*
+ * \brief Read the battery voltage and compute actual voltage
+ */
+float getRealBatteryVoltage()
+{
+  /*
+   * This pin is connected to the middle of a 10M and 2M resistor
+   * that are between Vcc and GND.
+   * So actual battery voltage is:
+   *    <adc value> * 1023. / AREF * (10+2) / 2
+   */
+  uint16_t batteryVoltage = analogRead(BATVOLTPIN);
+  return (ADC_AREF / 1023.) * batteryVoltage * ((BATVOLT_R1 + BATVOLT_R2) / BATVOLT_R2);
 }
 
 void dumpBuffer(uint8_t * buf, size_t size)

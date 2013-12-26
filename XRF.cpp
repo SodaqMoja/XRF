@@ -58,16 +58,18 @@ void XRF::init(Stream &stream,
 * \param timeout the maximum number of milliseconds for the whole operation
 * \return 0 if the operation was successful or else an error code
 */
-uint8_t XRF::sendData(const char *data, uint16_t timeout)
+void XRF::sendData(const char *data, uint16_t timeout)
 {
   diagPrint(F("SendData: '")); diagPrint(data); diagPrintLn('\'');
+
+  // All current input can be flushed. It is not for us.
+  flushInput();
+
   uint16_t crc = crc16_ccitt((uint8_t *)data, strlen(data));
   _myStream->print(data);
   _myStream->print(',');
   _myStream->print(crc);
   _myStream->print(_eol);
-
-  return XRF_NOT_IMPLEMENTED;
 }
 
 /*
@@ -220,6 +222,94 @@ uint8_t XRF::getDataRate()
     return 0;
   }
   return val;
+}
+
+/*
+* Set the sleep of the XRF and record the pin to bring the device to sleep
+*
+* Part of the AT documentation goes like this:
+*   0 – no sleep, the /SLEEP pin has no effect
+*   1 – when the /SLEEP pin is set high or un-connected the XRF will run,
+*       when the sleep pin is set low the XRF will sleep (power consumption
+*       when sleeping of around 150uA)
+*   2 – when the /SLEEP pin is set low the XRF will run, when the sleep pin
+*       is un-connected or set high the XRF will sleep. This is the sleep
+*       mode with the lowest sleeping power consumption (<0.5uA)
+*
+* \param mode the parameter for the ATSM
+* \return XRF_OK if the operation was successful or else an error code
+*/
+uint8_t XRF::setSleepMode(uint8_t mode, uint8_t sleepPin)
+{
+  uint8_t status = XRF_NOT_IMPLEMENTED;
+  // First set the pin so that we don't go to sleep right away
+  _sleepPin = sleepPin;
+  switch (mode) {
+  case 0:
+    // No-op
+    break;
+  case 1:
+    // Set pin HIGH to not sleep
+    digitalWrite(_sleepPin, HIGH);
+    break;
+  case 2:
+    // Set pin LOW to not sleep
+    digitalWrite(_sleepPin, LOW);
+    break;
+  default:
+    break;
+  }
+
+  switch (mode) {
+  case 0:
+  case 1:
+  case 2:
+    _sleepMode = mode;
+    status = sendATxSetHexNumber("ATSM", _sleepMode);
+    break;
+  default:
+    _sleepMode = 0;
+    break;
+  }
+  return status;
+}
+
+void XRF::sleep()
+{
+  switch (_sleepMode) {
+  case 0:
+    // No-op
+    break;
+  case 1:
+    // Set pin LOW to sleep
+    digitalWrite(_sleepPin, LOW);
+    break;
+  case 2:
+    // Set pin HIGH to sleep
+    digitalWrite(_sleepPin, HIGH);
+    break;
+  default:
+    break;
+  }
+}
+
+void XRF::wakeUp()
+{
+  switch (_sleepMode) {
+  case 0:
+    // No-op
+    break;
+  case 1:
+    // Set pin HIGH to wake up
+    digitalWrite(_sleepPin, HIGH);
+    break;
+  case 2:
+    // Set pin LOW to wake up
+    digitalWrite(_sleepPin, LOW);
+    break;
+  default:
+    break;
+  }
 }
 
 //////////////////////////

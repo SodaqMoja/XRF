@@ -56,7 +56,13 @@ public:
   uint8_t setATDR(uint8_t rate) { return setDataRate(rate); }
   uint8_t getDataRate();
 
-  uint8_t sendData(const char *data, uint16_t timeout=3000);
+  uint8_t setSleepMode(uint8_t mode, uint8_t sleepPin);
+  void sleep();
+  void wakeUp();
+
+  void flushInput();
+
+  void sendData(const char *data, uint16_t timeout=3000);
   uint8_t receiveData(const char *prefix, char *data, size_t size, uint16_t timeout=3000);
   uint8_t receiveData(char *data, size_t size, uint16_t timeout=3000);
   int available() { return _myStream->available(); }
@@ -65,7 +71,6 @@ public:
 
 private:
   bool readLine(char *buffer, size_t size, uint16_t timeout=2000);
-  void flushInput();
   uint8_t waitForOK(uint16_t timeout=2000);
   void sendCommand(const char *cmd);
   uint8_t sendCommandWaitForOK(const char *cmd, uint16_t timeout=2000);
@@ -100,6 +105,8 @@ private:
   uint8_t _nrRetries;
   uint16_t _retryTimeout;
   bool _inCmndMode;
+  uint8_t _sleepPin;
+  uint8_t _sleepMode;
 };
 
 #endif  /* XRF_H_ */
