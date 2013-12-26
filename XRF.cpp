@@ -97,7 +97,7 @@ uint8_t XRF::receiveData(const char *prefix, char *data, size_t size, uint16_t t
           uint16_t crc1 = crc16_ccitt((uint8_t *)data, strlen(data));
           //diagPrint(F("receiveData: '")); diagPrint(data); diagPrintLn('\'');
           //diagPrint(F("receiveData checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
-          return XRF_OK;
+          return crc1 == crc ? XRF_OK : XRF_CRC_ERROR;
         }
       }
       // Keep on trying

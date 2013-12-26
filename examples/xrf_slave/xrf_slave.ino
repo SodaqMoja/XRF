@@ -54,8 +54,11 @@ void createSlaveName(uint8_t *buffer, size_t size);
 void doSendHello();
 void doSendTs();
 void doAskUpload();
+void doUpload();
+bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size);
 
 void bumpFailedCounter();
+void resetFailedCounter();
 void dumpBuffer(uint8_t * buf, size_t size);
 
 void setup()
@@ -118,12 +121,15 @@ void loop()
     uint32_t ts = rtc.now().getEpoch();
     if (ts > nextUpload) {
       // TODO Do next upload
+      doUpload();
     }
   } else {
     // If not initialized then wait a second before retrying
     delay(1000);
     return;
   }
+
+  // Go to sleep
 }
 
 /*
@@ -131,80 +137,42 @@ void loop()
  */
 void doSendHello()
 {
-  uint8_t status;
-  char line[60];
   char data[60];
-  char *ptr = line;
+  char *ptr;
 
-  strcpy(ptr, XRF_DEMO_REQUEST_PREFIX);
-  ptr += strlen(ptr);
-  strcpy(ptr, "hello");
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  strcpy(ptr, slaveName);
-  (void)xrf.sendData(line);
-
-  // Wait until we get a line starting with slave name
-  ptr = line;
-  strcpy(ptr, slaveName);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  *ptr = '\0';
-  status = xrf.receiveData(line, data, sizeof(data));
-  if (status == XRF_OK) {
-    // Skip our own slave name
-    ptr = data + strlen(line);
+  if (sendCommandAndWaitForReply("hello", data, sizeof(data))) {
+    // Expecting a number
+    ptr = data;
     if (strncmp(ptr, "ack", 3) == 0) {
       doneHello = true;
       DIAGPRINTLN("receive hello ack: ");
+    } else {
     }
-  } else {
-    //DIAGPRINT("receiveData hello failed: "); DIAGPRINTLN(status);
-    bumpFailedCounter();
   }
 }
 
 /*
  * Send the "ts" command and wait for the timestamp from the master
  *
- * If the timestamp is received the RTC is updated with it.
+ * If the timestamp is received, the RTC is updated with it.
  */
 void doSendTs()
 {
-  uint8_t status;
-  char line[60];
   char data[60];
-  char *ptr = line;
+  char *ptr;
   char *eptr;
 
-  strcpy(ptr, XRF_DEMO_REQUEST_PREFIX);
-  ptr += strlen(ptr);
-  strcpy(ptr, "ts");
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  strcpy(ptr, slaveName);
-  (void)xrf.sendData(line);
-
-  // Wait until we get a line starting with slave name
-  ptr = line;
-  strcpy(ptr, slaveName);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  *ptr = '\0';
-  status = xrf.receiveData(line, data, sizeof(data));
-  if (status == XRF_OK) {
-    DIAGPRINT(F("ts: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
-    // Skip our own slave name
-    ptr = data + strlen(line);
+  if (sendCommandAndWaitForReply("ts", data, sizeof(data))) {
+    // Expecting a number
+    ptr = data;
     // Expecting a number
     uint32_t ts = strtoul(ptr, &eptr, 0);
     if (eptr != ptr) {
       rtc.setEpoch(ts);
       doneTs = true;
+    } else {
+      //DIAGPRINTLN("Invalid number");
     }
-  } else {
-    //DIAGPRINT("receiveData ts failed: "); DIAGPRINTLN(status);
-    bumpFailedCounter();
   }
 }
 
@@ -216,33 +184,13 @@ void doSendTs()
  */
 void doAskUpload()
 {
-  uint8_t status;
-  char line[60];
   char data[60];
-  char *ptr = line;
+  char *ptr;
   char *eptr;
 
-  strcpy(ptr, XRF_DEMO_REQUEST_PREFIX);
-  ptr += strlen(ptr);
-  strcpy(ptr, "next");
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  strcpy(ptr, slaveName);
-  (void)xrf.sendData(line);
-
-  // Wait until we get a line starting with slave name
-  ptr = line;
-  strcpy(ptr, slaveName);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  *ptr = '\0';
-  status = xrf.receiveData(line, data, sizeof(data));
-  if (status == XRF_OK) {
-    DIAGPRINT(F("next: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
-    // Skip our own slave name
-    ptr = data + strlen(line);
-    DIAGPRINT(F("next1: '")); DIAGPRINT(ptr); DIAGPRINTLN('\'');
+  if (sendCommandAndWaitForReply("next", data, sizeof(data))) {
     // Expecting a number
+    ptr = data;
     uint32_t ts = strtoul(ptr, &eptr, 0);
     if (eptr != ptr) {
       nextUpload = ts;
@@ -260,10 +208,63 @@ void doAskUpload()
       // Invalid number
       //DIAGPRINTLN("Invalid number");
     }
+  }
+}
+
+/*
+ * Upload data to the master
+ *
+ * The collected data will be sent to the master, and if it was
+ * done successful the time for the next upload is incremented
+ * with the interval
+ */
+void doUpload()
+{
+  // TODO
+  DIAGPRINT("doUpload: "); DIAGPRINTLN(uploadInterval);
+  if (uploadInterval) {
+    nextUpload += uploadInterval;
   } else {
-    //DIAGPRINT("receiveData next failed: "); DIAGPRINTLN(status);
+    nextUpload = 0;
+  }
+}
+
+bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size)
+{
+  bool retval = false;
+  uint8_t status;
+  char line[60];
+  char *ptr = line;
+
+  // A bit clumsy code, because using snprintf causes much larger code size
+  strcpy(ptr, XRF_DEMO_REQUEST_PREFIX);
+  ptr += strlen(ptr);
+  strcpy(ptr, cmd);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  strcpy(ptr, slaveName);
+  (void)xrf.sendData(line);
+
+  // Wait until we get a line starting with slave name
+  ptr = line;
+  strcpy(ptr, slaveName);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  *ptr = '\0';
+  status = xrf.receiveData(line, data, size);
+  if (status == XRF_OK) {
+    resetFailedCounter();
+    // Strip our slave prefix.
+    ptr = data + strlen(line);
+    DIAGPRINT(F("reply: '")); DIAGPRINT(ptr); DIAGPRINTLN('\'');
+    // Move the bytes to start of buffer. This should be safe.
+    strcpy(data, ptr);
+    retval = true;
+  } else {
+    DIAGPRINT("receiveData failed: "); DIAGPRINTLN(status);
     bumpFailedCounter();
   }
+  return retval;
 }
 
 /*
@@ -302,6 +303,11 @@ void bumpFailedCounter()
     doneHello = false;
     doneTs = false;
   }
+}
+
+void resetFailedCounter()
+{
+  failedCounter = 0;
 }
 
 void dumpBuffer(uint8_t * buf, size_t size)

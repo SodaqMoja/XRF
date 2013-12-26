@@ -28,6 +28,7 @@ enum {
   XRF_NOT_OK,                   // Failed to see OK
   XRF_TIMEOUT,
   XRF_MAXRETRY,
+  XRF_CRC_ERROR,
   XRF_FAIL_CMDMODE,             // Failed to enter command mode (+++)
   XRF_NOT_IN_CMDMODE,           // Attempting a command while not in Command Mode
   XRF_NOT_IMPLEMENTED,          // Function not yet implemented
