@@ -9,6 +9,9 @@
 #define XRF_REQUEST_PREFIX      "M,"
 
 #include <string.h>
+#include <avr/sleep.h>
+#include <avr/wdt.h>
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <SoftwareSerial.h>
@@ -17,6 +20,9 @@
 
 #include "Diag.h"
 #include "Utils.h"
+
+// The Xbee DTR is connected to the XRF sleep pin
+#define XBEE_DTR        7
 
 // Only needed if DIAG is enabled
 #define DIAGPORT_RX     4
@@ -50,12 +56,16 @@ typedef struct SlaveInfo_t SlaveInfo_t;
 SlaveInfo_t slaves[4];
 size_t nrSlaves;
 
+// A flag to indicate that a WDT interrupt happened.
+bool wdtTicked;
+
 bool doneRtcUpdate;
 
 // How long does a wake up last?
-const uint16_t wakeUpPeriod = 20;
+// IMPORTANT. This amount determines the interval of a slave trying to reconnect.
+const uint16_t masterWakeUpPeriod = 20;
 // What is the time between two wake ups?
-const uint16_t wakeUpInterval = 1 * 60;
+const uint16_t masterWakeUpInterval = 1 * 60;
 // The time for the next wake up
 uint32_t nextWakeUp;
 // The time for the next upload
@@ -69,6 +79,9 @@ const uint16_t uploadInterval = 2 * 60;
 #endif
 
 //################  forward declare  ###############
+void setupWatchDog();
+void gotoSleep();
+
 void doRtcUpdate();
 
 void readCommand();
@@ -83,6 +96,9 @@ bool addSlave(const char *name);
 
 void setup()
 {
+  /* Clear WDRF in MCUSR */
+  MCUSR &= ~_BV(WDRF);
+
   Serial.begin(9600);
   xrf.init(Serial);
 #ifdef ENABLE_DIAG
@@ -95,7 +111,10 @@ void setup()
   Wire.begin();
   rtc.begin();
 
-  xrf.setPanID(XRF_DEMO_PANID);
+  // Setting panID must succeed
+  while (xrf.setPanID(XRF_DEMO_PANID) != XRF_OK) {
+  }
+  xrf.setSleepMode(1, XBEE_DTR);
   (void)xrf.leaveCmndMode();
   Serial.println("XRF master");
 
@@ -104,10 +123,22 @@ void setup()
   nextWakeUp = ts;
   // Do upload in 30 seconds from now
   nextUpload = ts + 30;
+
+  setupWatchDog();
+
+  // Enable interrupts
+  interrupts();
 }
 
 void loop()
 {
+  if (wdtTicked) {
+    wdt_reset();
+    WDTCSR |= _BV(WDIE);                // Make sure WDIE is set (see setupWatchdog)
+
+    wdtTicked = false;
+  }
+
   if (!doneRtcUpdate) {
     doRtcUpdate();
   }
@@ -115,10 +146,12 @@ void loop()
   uint32_t ts = rtc.now().getEpoch();
   if (ts >= nextWakeUp || ts >= nextUpload) {
     DIAGPRINTLN("XRF master, start wakeup");
+    xrf.wakeUp();
+    delay(100);                 // FIXME How much is needed, if any?
     Serial.print("XRF master, start wakeup "); Serial.println(ts);
     xrf.flushInput();
     // Read commands and execute them
-    uint32_t endWakeUp = ts + wakeUpPeriod;
+    uint32_t endWakeUp = ts + masterWakeUpPeriod;
     while (rtc.now().getEpoch() < endWakeUp) {
       if (xrf.available() > 0) {
         readCommand();
@@ -126,16 +159,100 @@ void loop()
     }
     ts = rtc.now().getEpoch();
     if (ts > nextWakeUp) {
-      nextWakeUp += wakeUpInterval;
+      nextWakeUp += masterWakeUpInterval;
     }
     if (ts > nextUpload) {
       nextUpload += uploadInterval;
     }
     DIAGPRINTLN("XRF master, end wakeup");
     Serial.println("XRF master, end wakeup");
+    delay(1000);
   }
 
   // Go to sleep
+  gotoSleep();
+}
+
+//################ watchdog timer ################
+
+// The watchdog timer is used to make timed interrupts
+// This is a modified version of wdt_enable() from avr/wdt.h
+// Only WDIE is set!!
+// Note from the doc: "Executing the corresponding interrupt
+// vector will clear WDIE and WDIF automatically by hardware
+// (the Watchdog goes to System Reset Mode)
+#define my_wdt_enable(value)   \
+__asm__ __volatile__ (  \
+    "in __tmp_reg__,__SREG__" "\n\t"    \
+    "cli" "\n\t"    \
+    "wdr" "\n\t"    \
+    "sts %0,%1" "\n\t"  \
+    "out __SREG__,__tmp_reg__" "\n\t"   \
+    "sts %0,%2" "\n\t" \
+    : /* no outputs */  \
+    : "M" (_SFR_MEM_ADDR(_WD_CONTROL_REG)), \
+      "r" (_BV(_WD_CHANGE_BIT) | _BV(WDE)), \
+      "r" ((uint8_t) (((value & 0x08) ? _WD_PS3_MASK : 0x00) | \
+          _BV(WDIE) | (value & 0x07)) ) \
+    : "r0"  \
+)
+
+/*
+ * Setup the watch dog (wdt)
+ */
+void setupWatchDog()
+{
+#if 1
+  my_wdt_enable(WDTO_1S);
+#else
+  wdt_enable(WDTO_1S);
+  WDTCSR |= _BV(WDIE);
+  /*
+   * Now the wdt is in "Interrupt and System Reset Mode".
+   * The first time-out in the Watchdog Timer will set WDIF. Executing the corresponding interrupt
+   * vector will clear WDIE and WDIF automatically by hardware (the Watchdog goes to System Reset
+   * Mode). This is useful for keeping the Watchdog Timer security while using the interrupt. To
+   * stay in Interrupt and System Reset Mode, WDIE must be set after each interrupt. This should
+   * however not be done within the interrupt service routine itself, as this might compromise
+   * the safety-function of the Watchdog System Reset mode. If the interrupt is not executed
+   * before the next time-out, a System Reset will be applied.
+   */
+#endif
+}
+
+//################ interrupt ################
+/*
+ * \brief WDT Interrupt handler
+ *
+ * This handler doesn't do a lot. Just set a flag.
+ * Meanwhile the CPU woke up, so that the program continues
+ * in the main loop.
+ */
+ISR(WDT_vect)
+{
+  wdtTicked = true;
+}
+
+//################ sleep mode ################
+void gotoSleep()
+{
+  xrf.sleep();
+
+  ADCSRA &= ~_BV(ADEN);         // ADC disabled
+
+  /*
+  * Possible sleep modes are (see sleep.h):
+  #define SLEEP_MODE_IDLE         (0)
+  #define SLEEP_MODE_ADC          _BV(SM0)
+  #define SLEEP_MODE_PWR_DOWN     _BV(SM1)
+  #define SLEEP_MODE_PWR_SAVE     (_BV(SM0) | _BV(SM1))
+  #define SLEEP_MODE_STANDBY      (_BV(SM1) | _BV(SM2))
+  #define SLEEP_MODE_EXT_STANDBY  (_BV(SM0) | _BV(SM1) | _BV(SM2))
+  */
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  sleep_mode();
+
+  ADCSRA |= _BV(ADEN);          // ADC enabled
 }
 
 /*
@@ -284,7 +401,9 @@ void srvNext(const char *name)
   strcpy(ptr, name);
   ptr += strlen(name);
   *ptr++ = ',';
-  uint32_t ts = nextUpload + slaves[slaveIx].uploadOffset;
+  // The +1 is to give the master extra time to wake up
+  // before are going to send their messages.
+  uint32_t ts = nextUpload + 1 + slaves[slaveIx].uploadOffset;
   ultoa(ts, ptr, 10);
   ptr += strlen(ptr);
   *ptr++ = ',';
