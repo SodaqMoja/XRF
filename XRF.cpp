@@ -32,6 +32,8 @@ XRF::XRF()
   _nrRetries = 3;
   _retryTimeout = 2000;
   _inCmndMode = false;
+  _sleepMode = 0;
+  _sleepPin = 0;
 }
 
 /*
@@ -55,17 +57,15 @@ void XRF::init(Stream &stream,
 * is added too.
 *
 * \param data is a pointer to the ASCII data
-* \param timeout the maximum number of milliseconds for the whole operation
-* \return 0 if the operation was successful or else an error code
 */
-void XRF::sendData(const char *data, uint16_t timeout)
+void XRF::sendData(const char *data)
 {
   diagPrint(F("SendData: '")); diagPrint(data); diagPrintLn('\'');
 
   // All current input can be flushed. It is not for us.
   flushInput();
 
-  uint16_t crc = crc16_ccitt((uint8_t *)data, strlen(data));
+  uint16_t crc = crc16_xmodem((uint8_t *)data, strlen(data));
   _myStream->print(data);
   _myStream->print(',');
   _myStream->print(crc);
@@ -79,6 +79,7 @@ void XRF::sendData(const char *data, uint16_t timeout)
  * \param data a pointer to store the result
  * \param size the maximum number of bytes to store in the result buffer (including \0)
  * \param timeout the maximum number of milliseconds for the whole operation
+ * \return XRF_OK if the operation was successful or else an error code
  */
 uint8_t XRF::receiveData(const char *prefix, char *data, size_t size, uint16_t timeout)
 {
@@ -96,7 +97,7 @@ uint8_t XRF::receiveData(const char *prefix, char *data, size_t size, uint16_t t
           //diagPrint(F("receiveData crc: ")); diagPrintLn(crc);
           // Strip the checksum
           *cptr = '\0';
-          uint16_t crc1 = crc16_ccitt((uint8_t *)data, strlen(data));
+          uint16_t crc1 = crc16_xmodem((uint8_t *)data, strlen(data));
           //diagPrint(F("receiveData: '")); diagPrint(data); diagPrintLn('\'');
           //diagPrint(F("receiveData checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
           return crc1 == crc ? XRF_OK : XRF_CRC_ERROR;
@@ -119,7 +120,8 @@ uint8_t XRF::receiveData(const char *prefix, char *data, size_t size, uint16_t t
  *
  * \param data a pointer to store the result
  * \param size the maximum number of bytes to store in the result buffer (including \0)
-* \param timeout the maximum number of milliseconds for the whole operation
+ * \param timeout the maximum number of milliseconds for the whole operation
+ * \return XRF_OK if the operation was successful or else an error code
  */
 uint8_t XRF::receiveData(char *data, size_t size, uint16_t timeout)
 {
@@ -179,6 +181,7 @@ uint8_t XRF::setBaudRate(uint32_t rate)
  * baud rates are possible.
  *
  * \return the baud rate
+ * \return 0xffffffff (-1) if the operation failed
  */
 uint32_t XRF::getBaudRate()
 {
@@ -559,13 +562,25 @@ bool XRF::findCrc(char *txt, uint16_t *crc, char **cptr)
 }
 
 /*
- * \brief Compute CRC16 of a byte buffer
+ * \brief Compute CRC16 of a byte buffer (CCITT)
  */
 uint16_t XRF::crc16_ccitt(uint8_t * buf, size_t len)
 {
     uint16_t crc = 0xFFFF;
     while (len--) {
         crc = _crc_ccitt_update(crc, *buf++);
+    }
+    return crc;
+}
+
+/*
+ * \brief Compute CRC16 of a byte buffer (XMODEM)
+ */
+uint16_t XRF::crc16_xmodem(uint8_t * buf, size_t len)
+{
+    uint16_t crc = 0;
+    while (len--) {
+        crc = _crc_xmodem_update(crc, *buf++);
     }
     return crc;
 }

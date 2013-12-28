@@ -62,7 +62,7 @@ public:
 
   void flushInput();
 
-  void sendData(const char *data, uint16_t timeout=3000);
+  void sendData(const char *data);
   uint8_t receiveData(const char *prefix, char *data, size_t size, uint16_t timeout=3000);
   uint8_t receiveData(char *data, size_t size, uint16_t timeout=3000);
   int available() { return _myStream->available(); }
@@ -84,6 +84,7 @@ private:
 
   bool findCrc(char *txt, uint16_t *crc, char **cptr);
   uint16_t crc16_ccitt(uint8_t * buf, size_t len);
+  uint16_t crc16_xmodem(uint8_t * buf, size_t len);
 
   // TODO There must be an easier way to do this.
   void diagPrint(const char *str) { if (_diagStream) _diagStream->print(str); }
