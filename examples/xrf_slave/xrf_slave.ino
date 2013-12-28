@@ -7,7 +7,6 @@
 
 #define XRF_DEMO_PANID          0x5AA5
 #define XRF_REQUEST_PREFIX      "M,"
-#define MAX_FAILED              30      // After this many failed, reset doneHello
 #define ADC_AREF                3.3     // DEFAULT see wiring_analog.c
 
 #include <Arduino.h>
@@ -55,7 +54,9 @@ bool doneHello;
 bool doneTs;
 uint32_t nextUpload;
 uint16_t uploadInterval;
-uint16_t failedCounter;
+size_t failedCounter;
+const size_t maxFailedCounter = 10;
+const size_t maxRetryCount = 3;
 
 //################  forward declare  ###############
 void createSlaveName(uint8_t *buffer, size_t size);
@@ -68,6 +69,7 @@ bool sendKeyValueAndWaitForAck(const char *parm, const char *val);
 bool sendKeyValueAndWaitForAck(const char *parm, uint32_t val);
 bool sendKeyValueAndWaitForAck(const char *parm, float val);
 
+void redoHello();
 void bumpFailedCounter();
 void resetFailedCounter();
 
@@ -140,8 +142,10 @@ void loop()
     Serial.print(slaveName);
     Serial.print(", start wakeup ");
     Serial.println(ts);
+
     // TODO Do next upload
     doUpload();
+
     Serial.print("XRF slave ");
     Serial.print(slaveName);
     Serial.println(", done upload");
@@ -202,7 +206,7 @@ void doSendTs()
  * Send the "next" command
  *
  * The answer from the master should have the timestamp for the
- * * next upload, and also the upload interval (in seconds)
+ * next upload, and also the upload interval (in seconds)
  */
 void doAskUpload()
 {
@@ -234,24 +238,6 @@ void doAskUpload()
 }
 
 /*
- * Send the "batt" command and wait for an "ack"
- */
-void doSendBatteryLevel()
-{
-  char data[60];
-  char *ptr;
-
-  if (sendCommandAndWaitForReply("batt", data, sizeof(data))) {
-    ptr = data;
-    if (strncmp(ptr, "ack", 3) == 0) {
-      doneHello = true;
-      DIAGPRINTLN("receive batt ack: ");
-    } else {
-    }
-  }
-}
-
-/*
  * Upload data to the master
  *
  * The collected data will be sent to the master, and if it was
@@ -261,14 +247,26 @@ void doSendBatteryLevel()
 void doUpload()
 {
   // TODO
-  DIAGPRINT("doUpload: "); DIAGPRINTLN(uploadInterval);
+  DIAGPRINT("doUpload: "); DIAGPRINTLN(nextUpload);
+
+  bool ok = false;
 
   float batVolt = getRealBatteryVoltage();
-  sendKeyValueAndWaitForAck("batt", batVolt);
+  for (size_t i = 0; i < maxRetryCount; ++i) {
+    if (sendKeyValueAndWaitForAck("batt", batVolt)) {
+      ok = true;
+      break;
+    }
+  }
+  if (!ok) {
+    redoHello();
+    return;
+  }
 
   if (uploadInterval) {
     nextUpload += uploadInterval;
   } else {
+    // This will trigger to ask for a new next upload
     nextUpload = 0;
   }
 }
@@ -412,15 +410,21 @@ void createSlaveName(uint8_t *buffer, size_t size)
 
 void bumpFailedCounter()
 {
-  if (++failedCounter > MAX_FAILED) {
-    doneHello = false;
-    doneTs = false;
+  if (++failedCounter > maxFailedCounter) {
+    redoHello();
   }
 }
 
 void resetFailedCounter()
 {
   failedCounter = 0;
+}
+
+void redoHello()
+{
+  doneHello = false;
+  doneTs = false;
+  nextUpload = 0;
 }
 
 /*

@@ -41,6 +41,9 @@ struct SlaveInfo_t
 {
   char name[10];
   uint16_t uploadOffset;
+
+  // The rest is the data record per slave
+
   float battVolt;
 };
 typedef struct SlaveInfo_t SlaveInfo_t;
@@ -317,7 +320,7 @@ void srvBatt(const char *data)
     return;
   }
 
-  // TODO Get battery value from the data
+  // Extract battery value from the data stream
   if (*dptr == ',') {
     ++dptr;
   }
