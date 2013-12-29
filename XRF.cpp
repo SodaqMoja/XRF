@@ -279,6 +279,8 @@ uint8_t XRF::setSleepMode(uint8_t mode, uint8_t sleepPin)
 
 void XRF::sleep()
 {
+  // Allow a bit of time to write whatever is in the output buffer
+  delay(1000);
   switch (_sleepMode) {
   case 0:
     // No-op
