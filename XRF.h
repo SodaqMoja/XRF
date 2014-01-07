@@ -41,7 +41,9 @@ public:
   XRF();
 
   void init(Stream &stream,
+      const char *devName,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
+  void setFldSep(char fldSep) { _fldSep = fldSep; }
 
   uint8_t leaveCmndMode();
 
@@ -63,9 +65,13 @@ public:
   void flushInput();
 
   void sendData(const char *data);
-  uint8_t receiveData(const char *prefix, char *data, size_t size, uint16_t timeout=3000);
-  uint8_t receiveData(char *data, size_t size, uint16_t timeout=3000);
+  uint8_t receiveMyData(char *data, size_t size, uint16_t timeout=3000);
+  uint8_t receiveAnyData(char *data, size_t size, uint16_t timeout=3000);
   int available() { return _myStream->available(); }
+
+  uint8_t sendDataAndWaitForReply(const char *data, char *reply, size_t replySize);
+
+  size_t getFailedCounter() { return _failedCounter; }
 
   void setDiag(Stream &stream) { _diagStream = &stream; }
 
@@ -105,9 +111,12 @@ private:
   uint16_t _panID;
   uint8_t _nrRetries;
   uint16_t _retryTimeout;
+  char _fldSep;
   bool _inCmndMode;
   uint8_t _sleepPin;
   uint8_t _sleepMode;
+  char _devName[10];
+  size_t _failedCounter;
 };
 
 #endif  /* XRF_H_ */
