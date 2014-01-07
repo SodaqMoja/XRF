@@ -7,6 +7,7 @@
 
 #define XRF_DEMO_PANID          0x5AA5
 #define XRF_REQUEST_PREFIX      "M,"
+#define MAX_NR_SLAVES           10
 
 #include <string.h>
 #include <avr/sleep.h>
@@ -22,38 +23,31 @@
 #include "Utils.h"
 
 // The Xbee DTR is connected to the XRF sleep pin
-#define XBEE_DTR        7
+#define XBEEDTR_PIN     7
 
 // Only needed if DIAG is enabled
 #define DIAGPORT_RX     4
 #define DIAGPORT_TX     5
 
-//#########       diag      #############
-#ifdef ENABLE_DIAG
-#if defined(UBRRH) || defined(UBRR0H)
-// There probably is no other Serial port that we can use
-// Use a Software Serial instead
-#include <SoftwareSerial.h>
-SoftwareSerial diagport(DIAGPORT_RX, DIAGPORT_TX);
-#else
-#define diagport Serial
-#endif
-#endif
 
-
+//#########       variables      #############
 XRF xrf;
 
+struct DataRecord_t
+{
+  uint32_t ts;
+  float battVolt;
+  float temp;
+};
+typedef struct DataRecord_t DataRecord_t;
 struct SlaveInfo_t
 {
   char name[10];
   uint16_t uploadOffset;
-
-  // The rest is the data record per slave
-
-  float battVolt;
 };
 typedef struct SlaveInfo_t SlaveInfo_t;
-SlaveInfo_t slaves[4];
+SlaveInfo_t slaves[MAX_NR_SLAVES];
+DataRecord_t dataRecords[MAX_NR_SLAVES + 1];    // One record for the master
 size_t nrSlaves;
 
 // A flag to indicate that a WDT interrupt happened.
@@ -69,7 +63,7 @@ const uint16_t masterWakeUpInterval = 1 * 60;
 // The time for the next wake up
 uint32_t nextWakeUp;
 // The time for the next upload
-uint32_t nextUpload;
+uint32_t nextSlaveUpload;
 // What is the time between two uploads?
 #if 0
 const uint16_t uploadInterval = 60 * 60;
@@ -86,13 +80,26 @@ void doRtcUpdate();
 
 void readCommand();
 int findCmndIx(const char *data);
-void srvHello(const char *name);
+void srvHello(const char *data);
 void srvTs(const char *data);
 void srvNext(const char *data);
 void srvBatt(const char *data);
+void srvData(const char *data);
+
+void sendAck(char *line, bool startComma);
+void sendNack(char *line, bool startComma);
+void sendAckNack(char *line, bool startComma, const char *acknack);
 
 int findSlave(const char *name);
 bool addSlave(const char *name);
+
+uint16_t hex2Bin(const char *str, int width);
+
+//#########       diag      #############
+#ifdef ENABLE_DIAG
+#include <SoftwareSerial.h>
+SoftwareSerial diagport(DIAGPORT_RX, DIAGPORT_TX);
+#endif
 
 void setup()
 {
@@ -100,7 +107,7 @@ void setup()
   MCUSR &= ~_BV(WDRF);
 
   Serial.begin(9600);
-  xrf.init(Serial);
+  xrf.init(Serial, "M");
 #ifdef ENABLE_DIAG
   diagport.begin(9600);
   xrf.setDiag(diagport);
@@ -114,7 +121,8 @@ void setup()
   // Setting panID must succeed
   while (xrf.setPanID(XRF_DEMO_PANID) != XRF_OK) {
   }
-  xrf.setSleepMode(1, XBEE_DTR);
+  while (xrf.setSleepMode(1, XBEEDTR_PIN)) {
+  }
   (void)xrf.leaveCmndMode();
   Serial.println("XRF master");
 
@@ -122,7 +130,7 @@ void setup()
   // Start wake up period right away.
   nextWakeUp = ts;
   // Do upload in 30 seconds from now
-  nextUpload = ts + 30;
+  nextSlaveUpload = ts + 30;
 
   setupWatchDog();
 
@@ -144,7 +152,7 @@ void loop()
   }
 
   uint32_t ts = rtc.now().getEpoch();
-  if (ts >= nextWakeUp || ts >= nextUpload) {
+  if (ts >= nextWakeUp || ts >= nextSlaveUpload) {
     DIAGPRINTLN("XRF master, start wakeup");
     xrf.wakeUp();
     delay(100);                 // FIXME How much is needed, if any?
@@ -161,8 +169,8 @@ void loop()
     if (ts > nextWakeUp) {
       nextWakeUp += masterWakeUpInterval;
     }
-    if (ts > nextUpload) {
-      nextUpload += uploadInterval;
+    if (ts > nextSlaveUpload) {
+      nextSlaveUpload += uploadInterval;
     }
     DIAGPRINTLN("XRF master, end wakeup");
     Serial.println("XRF master, end wakeup");
@@ -260,10 +268,9 @@ void gotoSleep()
  */
 void doRtcUpdate()
 {
-  // TODO
+  // TODO Were do we get the correct time from?
 
   doneRtcUpdate = true;
-  uint32_t ts = rtc.now().getEpoch();
 }
 
 struct Command_t
@@ -277,6 +284,7 @@ Command_t commands[] = {
     {"ts", srvTs},
     {"next", srvNext},
     {"batt", srvBatt},
+    {"data", srvData},
 };
 
 int findCmndIx(const char *data)
@@ -295,27 +303,21 @@ void readCommand()
   uint8_t status;
   char data[60];
   char *ptr;
-  int len;
 
-  status = xrf.receiveData(XRF_REQUEST_PREFIX, data, sizeof(data));
+  status = xrf.receiveMyData(data, sizeof(data));
   if (status == XRF_OK) {
     DIAGPRINT(F("data received: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
     //Serial.print(F("data received: '")); Serial.print(data); Serial.println('\'');
-    // Hmm. We have something. Is it for us?
-    len = strlen(XRF_REQUEST_PREFIX);
-    if (strncmp(data, XRF_REQUEST_PREFIX, len) == 0) {
-      // Yes, it is
-      ptr = data + len;
-      int cmdIx = findCmndIx(ptr);
-      if (cmdIx >= 0) {
-        if (commands[cmdIx].func) {
-          // Skip the command text and the comma
-          ptr += strlen(commands[cmdIx].cmd);
-          if (*ptr == ',') {
-            ++ptr;
-          }
-          commands[cmdIx].func(ptr);
-        }
+    ptr = data;
+    int cmdIx = findCmndIx(ptr);
+    if (cmdIx >= 0) {
+      if (commands[cmdIx].func) {
+	// Skip the command text and the comma
+	ptr += strlen(commands[cmdIx].cmd);
+	if (*ptr == ',') {
+	  ++ptr;
+	}
+	commands[cmdIx].func(ptr);
       }
     }
   }
@@ -329,24 +331,32 @@ void readCommand()
  * The answer is formatted as follows:
  *   <slave id> ',' "ack"
  */
-void srvHello(const char *name)
+void srvHello(const char *data)
 {
   char line[60];
+  const char *dptr;
+  char *ptr;
 
-  DIAGPRINT(F("srvHello: '")); DIAGPRINT(name); DIAGPRINTLN('\'');
+  DIAGPRINT(F("srvHello: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
 
-  int slaveIx = findSlave(name);
+  // Get slave name, get a copy
+  for (ptr = line, dptr = data; *dptr && *dptr != ','; ++dptr) {
+    *ptr++ = *dptr;
+  }
+  *ptr = '\0';
+
+  int slaveIx = findSlave(line);
   if (slaveIx < 0) {
     // Store this slave ID in a list
-    if (!addSlave(name)) {
+    if (!addSlave(line)) {
       DIAGPRINTLN(F("srvHello slave name not accepted"));
+      sendNack(line, true);
       return;
     }
+  } else {
+    // The slave is already known
   }
-
-  strcpy(line, name);
-  strcat(line, ",ack");
-  (void)xrf.sendData(line);
+  sendAck(line, true);
 }
 
 /*
@@ -357,21 +367,27 @@ void srvHello(const char *name)
  * The answer is formatted as follows:
  *   <slave id> ',' <ts>
  */
-void srvTs(const char *name)
+void srvTs(const char *data)
 {
   char line[60];
+  const char *dptr;
   char *ptr;
 
-  DIAGPRINT(F("srvTs: '")); DIAGPRINT(name); DIAGPRINTLN('\'');
+  DIAGPRINT(F("srvTs: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
 
-  int slaveIx = findSlave(name);
+  // Get slave name, get a copy
+  for (ptr = line, dptr = data; *dptr && *dptr != ','; ++dptr) {
+    *ptr++ = *dptr;
+  }
+  *ptr = '\0';
+
+  int slaveIx = findSlave(line);
   if (slaveIx < 0) {
+    sendNack(line, true);
     return;
   }
 
-  ptr = line;
-  strcpy(ptr, name);
-  ptr += strlen(name);
+  // Append ',' <ts>
   *ptr++ = ',';
   uint32_t ts = rtc.now().getEpoch();
   ultoa(ts, ptr, 10);
@@ -385,25 +401,30 @@ void srvTs(const char *name)
  *   <slave id>
  *   <slave id> ',' <ts> ',' <interval>
  */
-void srvNext(const char *name)
+void srvNext(const char *data)
 {
   char line[60];
+  const char *dptr;
   char *ptr;
 
-  DIAGPRINT(F("srvNext: '")); DIAGPRINT(name); DIAGPRINTLN('\'');
+  DIAGPRINT(F("srvNext: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
 
-  int slaveIx = findSlave(name);
+  // Get slave name, get a copy
+  for (ptr = line, dptr = data; *dptr && *dptr != ','; ++dptr) {
+    *ptr++ = *dptr;
+  }
+  *ptr = '\0';
+
+  int slaveIx = findSlave(line);
   if (slaveIx < 0) {
+    sendNack(line, true);
     return;
   }
 
-  ptr = line;
-  strcpy(ptr, name);
-  ptr += strlen(name);
   *ptr++ = ',';
   // The +1 is to give the master extra time to wake up
   // before are going to send their messages.
-  uint32_t ts = nextUpload + 1 + slaves[slaveIx].uploadOffset;
+  uint32_t ts = nextSlaveUpload + 1 + slaves[slaveIx].uploadOffset;
   ultoa(ts, ptr, 10);
   ptr += strlen(ptr);
   *ptr++ = ',';
@@ -436,19 +457,119 @@ void srvBatt(const char *data)
 
   int slaveIx = findSlave(line);
   if (slaveIx < 0) {
+    sendNack(line, true);
     return;
   }
 
-  // Extract battery value from the data stream
+  // Extract value from the data stream
   if (*dptr == ',') {
     ++dptr;
   }
-  float battVolt = strtod(dptr, &eptr);
+  float value = strtod(dptr, &eptr);
   if (eptr != dptr) {
-    slaves[slaveIx].battVolt = battVolt;
-    strcat(line, ",ack");
-    (void)xrf.sendData(line);
+    dataRecords[slaveIx + 1].battVolt = value;
+    sendAck(line, true);
+  } else {
+    sendNack(line, true);
   }
+}
+
+/*
+ * Service the "data" command
+ *
+ * The format of the remainder of the line must be:
+ *   <slave id> ',' <value>
+ * The <value> is a hex representation of the data record,
+ * 2 hex digits per byte.
+ *
+ * The answer is formatted as follows:
+ *   <slave id> ',' "ack"
+ */
+void srvData(const char *data)
+{
+  char line[60];
+  const char *dptr;
+  char *ptr;
+
+  DIAGPRINT(F("srvData: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
+
+  // Get slave name, get a copy
+  for (ptr = line, dptr = data; *dptr && *dptr != ','; ++dptr) {
+    *ptr++ = *dptr;
+  }
+  *ptr = '\0';
+
+  int slaveIx = findSlave(line);
+  if (slaveIx < 0) {
+    sendNack(line, true);
+  }
+
+  // The data is a string of hex digits. The length must
+  // be exactly twice the size of the data record structure.
+  if (*dptr == ',') {
+    ++dptr;
+  }
+  int len = strlen(dptr);
+  DataRecord_t *dr = &dataRecords[slaveIx + 1];
+  uint8_t *bptr = (uint8_t *)dr;
+  if ((len / 2) == sizeof(*dr)) {
+    for (int i = 0; i < len; i += 2) {
+      *bptr++ = hex2Bin(dptr, 2);
+      dptr += 2;
+    }
+    DIAGPRINT(F("srvData: ts ")); DIAGPRINTLN(dr->ts);
+    DIAGPRINT(F("srvData: battVolt ")); DIAGPRINTLN(dr->battVolt);
+    DIAGPRINT(F("srvData: temp ")); DIAGPRINTLN(dr->temp);
+
+    sendAck(line, true);
+  } else {
+    sendNack(line, true);
+  }
+}
+
+/*
+ * Send a ACK and append a timestamp
+ *
+ * Notice that the "line" buffer used to append stuff. Make sure
+ * it is big enough.
+ */
+void sendAck(char *line, bool startComma)
+{
+  sendAckNack(line, startComma, "ack");
+}
+
+/*
+ * Send a NACK and append a timestamp
+ *
+ * Notice that the "line" buffer used to append stuff. Make sure
+ * it is big enough.
+ */
+void sendNack(char *line, bool startComma)
+{
+  sendAckNack(line, startComma, "nack");
+}
+
+/*
+ * Send a ACK/NACK and append a timestamp
+ *
+ * Notice that the "line" buffer used to append stuff. Make sure
+ * it is big enough.
+ */
+void sendAckNack(char *line, bool startComma, const char *acknack)
+{
+  char *ptr;
+  ptr = line;
+  ptr += strlen(ptr);
+  if (startComma) {
+    *ptr++ = ',';
+  }
+  strcpy(ptr, acknack);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  // Append timestamp as piggy back info
+  uint32_t ts = rtc.now().getEpoch();
+  ultoa(ts, ptr, 10);
+  (void)xrf.sendData(line);
 }
 
 int findSlave(const char *name)
@@ -479,4 +600,22 @@ bool addSlave(const char *name)
   next->uploadOffset = (nrSlaves + 1) * 1;
   ++nrSlaves;
   return true;
+}
+
+uint16_t hex2Bin(const char *str, int width)
+{
+  uint16_t value = 0;
+  for (int i = 0; i < width && *str; ++i, ++str) {
+    uint8_t b = 0;
+    if (*str >= '0' && *str <= '9') {
+      b = *str - '0';
+    } else if (*str >= 'A' && *str <= 'F') {
+      b = *str - 'A' + 10;
+    } else if (*str >= 'a' && *str <= 'f') {
+      b = *str - 'a' + 10;
+    }
+    value <<= 4;
+    value |= b;
+  }
+  return value;
 }

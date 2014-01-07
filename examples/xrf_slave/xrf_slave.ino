@@ -20,6 +20,7 @@
 #include <Sodaq_dataflash.h>
 #include <XRF.h>
 
+// Our own libraries
 #include "Diag.h"
 #include "Utils.h"
 
@@ -33,7 +34,7 @@
 #define BATVOLT_R2      2               // in fact 2M
 
 // The Xbee DTR is connected to the XRF sleep pin
-#define XBEE_DTR        7
+#define XBEEDTR_PIN     7
 
 // Only needed if DIAG is enabled
 #define DIAGPORT_RX     4
@@ -41,19 +42,22 @@
 
 //#########       diag      #############
 #ifdef ENABLE_DIAG
-#if defined(UBRRH) || defined(UBRR0H)
-// There probably is no other Serial port that we can use
-// Use a Software Serial instead
 #include <SoftwareSerial.h>
 SoftwareSerial diagport(DIAGPORT_RX, DIAGPORT_TX);
-#else
-#define diagport Serial
-#endif
 #endif
 
-
+//#########       variables      #############
 XRF xrf;
 char slaveName[10];     // This must hold 'S' plus a 8 hexdigit number and a \0
+
+struct DataRecord_t
+{
+  uint32_t ts;
+  float battVolt;
+  float temp;
+};
+typedef struct DataRecord_t DataRecord_t;
+DataRecord_t dataRecord;
 
 // A flag to indicate that a WDT interrupt happened.
 bool wdtTicked;
@@ -65,7 +69,7 @@ const uint16_t masterWakeUpPeriod = 20;
 // The time for the next wake up
 uint32_t nextWakeUp;
 // The time for the next upload
-uint32_t nextUpload;
+uint32_t nextSlaveUpload;
 // What is the time between two uploads?
 uint16_t uploadInterval;
 
@@ -77,60 +81,57 @@ const size_t maxRetryCount = 3;
 void setupWatchDog();
 void gotoSleep();
 
-void createSlaveName(uint8_t *buffer, size_t size);
+void doReadSensors();
+
+void createDeviceName(char *name, char prefix);
 void doSendHello();
 void doSendTs();
 void doAskNextUpload();
 void doUpload();
-bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size);
 bool sendKeyValueAndWaitForAck(const char *parm, const char *val);
 bool sendKeyValueAndWaitForAck(const char *parm, uint32_t val);
 bool sendKeyValueAndWaitForAck(const char *parm, float val);
-
-void bumpFailedCounter();
-void resetFailedCounter();
+void consumeTimestamp(const char *data);
 
 void redoHello();
-void setRtc(uint32_t ts);
+void setRtc(uint32_t newTs);
 
 float getRealBatteryVoltage();
 void dumpBuffer(uint8_t * buf, size_t size);
+
+void bin2hex(char *ptr, size_t dstSize, uint8_t *data, size_t srcSize);
+void myUtoa(uint16_t val, char *buf);
+void myUtoa(uint8_t val, char *buf);
 
 void setup()
 {
   /* Clear WDRF in MCUSR */
   MCUSR &= ~_BV(WDRF);
 
-  Serial.begin(9600);
-  xrf.init(Serial);
 #ifdef ENABLE_DIAG
   diagport.begin(9600);
+#endif
+  DIAGPRINTLN("GMS slave");
+
+  Wire.begin();
+  rtc.begin();
+  dflash.init(DF_MISO, DF_MOSI, DF_SPICLOCK, DF_SLAVESELECT);
+  createDeviceName(slaveName, 'S');
+  DIAGPRINT(F("slaveName: '")); DIAGPRINT(slaveName); DIAGPRINTLN('\'');
+
+  Serial.begin(9600);
+  xrf.init(Serial, slaveName);
+#ifdef ENABLE_DIAG
   xrf.setDiag(diagport);
 #endif
   delay(100);
   DIAGPRINTLN("XRF slave");
 
-  Wire.begin();
-  rtc.begin();
-  dflash.init(DF_MISO, DF_MOSI, DF_SPICLOCK, DF_SLAVESELECT);
-
-  {
-    uint8_t buffer[128];
-    dflash.readSecurityReg(buffer, 128);
-    /* An example of the second 64 bytes of the security register
-0D0414071A2D1F2600011204FFFFE8FF
-303032533636313216140AFFFFFFFFFF
-3E3E3E3E3E3C3E3E3E3C3E3C3C3E3E3C
-FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-     */
-    createSlaveName(buffer + 64, 64);
-    DIAGPRINT(F("slaveName: '")); DIAGPRINT(slaveName); DIAGPRINTLN('\'');
-  }
-
   // Setting panID must succeed
   while (xrf.setPanID(XRF_DEMO_PANID) != XRF_OK) {
   }
-  xrf.setSleepMode(1, XBEE_DTR);
+  while (xrf.setSleepMode(1, XBEEDTR_PIN)) {
+  }
   (void)xrf.leaveCmndMode();
   Serial.print("XRF slave "); Serial.println(slaveName);
 
@@ -152,7 +153,7 @@ void loop()
   }
 
   uint32_t ts = rtc.now().getEpoch();
-  if ((nextWakeUp && ts >= nextWakeUp) || (nextUpload && ts >= nextUpload)) {
+  if ((nextWakeUp && ts >= nextWakeUp) || (nextSlaveUpload && ts >= nextSlaveUpload)) {
     DIAGPRINTLN("XRF slave, start wakeup");
     //DIAGPRINT("nextUpload: "); DIAGPRINTLN(nextUpload);
     //DIAGPRINT("nextWakeUp: "); DIAGPRINTLN(nextWakeUp);
@@ -181,10 +182,10 @@ void loop()
       }
     }
 
-    if (nextUpload == 0) {
+    if (nextSlaveUpload == 0) {
       // We need to ask the master when the next upload is
       doAskNextUpload();
-      if (nextUpload == 0) {
+      if (nextSlaveUpload == 0) {
         goto endLoopRetry;
       } else {
         // No need for extra wake up
@@ -194,7 +195,7 @@ void loop()
 
     // Is it time for the next upload?
     ts = rtc.now().getEpoch();
-    if (ts >= nextUpload) {
+    if (ts >= nextSlaveUpload) {
       doUpload();
 
       Serial.print("XRF slave ");
@@ -296,18 +297,58 @@ void gotoSleep()
 }
 
 /*
+ * Read all sensor on this device
+ */
+void doReadSensors()
+{
+  DataRecord_t *dr = &dataRecord;
+  dr->ts = rtc.now().getEpoch();
+  dr->battVolt = getRealBatteryVoltage();
+  DIAGPRINT(dr->ts);
+  DIAGPRINT(" Battery Voltage: "); DIAGPRINTLN(dr->battVolt);
+  // While testing, send it over the XRF air too.
+  Serial.print(slaveName); Serial.print(' '); Serial.print(dr->ts);
+  Serial.print(" Battery Voltage: "); Serial.println(dr->battVolt);
+  dr->temp = rtc.getTemperature();
+  DIAGPRINT("RTC Temperature: "); DIAGPRINTLN(dr->temp);
+}
+
+/*
+ * Prepare the request to be send to the master
+ *
+ * The syntax of the result is:
+ *   <master prefix> ',' <cmd> ',' <slaveName>
+ * Beware to supply a buffer that is large enough.
+ */
+void prepareMasterRequest(char *buffer, const char *cmd)
+{
+  char *ptr;
+  // Prepare the request
+  ptr = buffer;
+  strcpy(ptr, XRF_REQUEST_PREFIX);
+  ptr += strlen(ptr);
+  strcpy(ptr, cmd);
+  ptr += strlen(ptr);
+  *ptr++ = ',';
+  strcpy(ptr, slaveName);
+}
+
+/*
  * Send the "hello" command and wait for an "ack"
  */
 void doSendHello()
 {
-  char data[60];
-  char *ptr;
+  char cmd[30];
+  char reply[40];
 
-  if (sendCommandAndWaitForReply("hello", data, sizeof(data))) {
-    ptr = data;
-    if (strncmp(ptr, "ack", 3) == 0) {
+  prepareMasterRequest(cmd, "hello");
+  if (xrf.sendDataAndWaitForReply(cmd, reply, sizeof(reply)) == XRF_OK) {
+    DIAGPRINT(F("hello reply: '")); DIAGPRINT(reply); DIAGPRINTLN('\'');
+    if (strncmp(reply, "ack", 3) == 0) {
       doneHello = true;
       DIAGPRINTLN("receive hello ack: ");
+      // Maybe there is a timestamp piggy back
+      consumeTimestamp(reply + 3);
     } else {
     }
   }
@@ -320,21 +361,13 @@ void doSendHello()
  */
 void doSendTs()
 {
-  char data[60];
-  char *ptr;
-  char *eptr;
+  char cmd[30];
+  char data[40];
 
-  if (sendCommandAndWaitForReply("ts", data, sizeof(data))) {
-    // Expecting a number
-    ptr = data;
-    // Expecting a number
-    uint32_t ts = strtoul(ptr, &eptr, 0);
-    if (eptr != ptr) {
-      setRtc(ts);
-      doneTs = true;
-    } else {
-      //DIAGPRINTLN("Invalid number");
-    }
+  prepareMasterRequest(cmd, "ts");
+  if (xrf.sendDataAndWaitForReply(cmd, data, sizeof(data)) == XRF_OK) {
+    DIAGPRINT(F("ts reply: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
+    consumeTimestamp(data);
   }
 }
 
@@ -346,17 +379,19 @@ void doSendTs()
  */
 void doAskNextUpload()
 {
-  char data[60];
+  char cmd[30];
+  char reply[60];
   char *ptr;
   char *eptr;
 
-  if (sendCommandAndWaitForReply("next", data, sizeof(data))) {
+  prepareMasterRequest(cmd, "next");
+  if (xrf.sendDataAndWaitForReply(cmd, reply, sizeof(reply)) == XRF_OK) {
     // Expecting a number
-    ptr = data;
+    ptr = reply;
     uint32_t ts = strtoul(ptr, &eptr, 0);
     if (eptr != ptr) {
-      nextUpload = ts;
-      DIAGPRINT("nextUpload: "); DIAGPRINTLN(nextUpload);
+      nextSlaveUpload = ts;
+      DIAGPRINT("nextUpload: "); DIAGPRINTLN(nextSlaveUpload);
       if (*eptr == ',') {
         ++eptr;
         ptr = eptr;
@@ -383,69 +418,29 @@ void doAskNextUpload()
 void doUpload()
 {
   // TODO
-  DIAGPRINT("doUpload: "); DIAGPRINTLN(nextUpload);
+  DIAGPRINT("doUpload: "); DIAGPRINTLN(nextSlaveUpload);
 
-  bool ok = false;
+  doReadSensors();
 
-  float batVolt = getRealBatteryVoltage();
-  for (size_t i = 0; i < maxRetryCount; ++i) {
-    if (sendKeyValueAndWaitForAck("batt", batVolt)) {
-      ok = true;
-      break;
-    }
+  char data[61];
+  size_t len = sizeof(dataRecord);
+  if (len * 2 > sizeof(data) - 1) {
+    DIAGPRINTLN("doUpload: FATAL ERROR: buffer too small");
+    return;
   }
-  if (!ok) {
+  bin2hex(data, sizeof(data), (uint8_t *)&dataRecord, len);
+
+  if (!sendKeyValueAndWaitForAck("data", data)) {
     redoHello();
     return;
   }
 
   if (uploadInterval) {
-    nextUpload += uploadInterval;
+    nextSlaveUpload += uploadInterval;
   } else {
     // This will trigger to ask for a new next upload
-    nextUpload = 0;
+    nextSlaveUpload = 0;
   }
-}
-
-/*
- * Send a simple command and wait for the reply
- */
-bool sendCommandAndWaitForReply(const char *cmd, char *data, size_t size)
-{
-  bool retval = false;
-  uint8_t status;
-  char line[60];
-  char *ptr = line;
-
-  // A bit clumsy code, because using snprintf causes much larger code size
-  strcpy(ptr, XRF_REQUEST_PREFIX);
-  ptr += strlen(ptr);
-  strcpy(ptr, cmd);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  strcpy(ptr, slaveName);
-  (void)xrf.sendData(line);
-
-  // Wait until we get a line starting with slave name
-  ptr = line;
-  strcpy(ptr, slaveName);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  *ptr = '\0';
-  status = xrf.receiveData(line, data, size);
-  if (status == XRF_OK) {
-    resetFailedCounter();
-    // Strip our slave prefix.
-    ptr = data + strlen(line);
-    DIAGPRINT(F("reply: '")); DIAGPRINT(ptr); DIAGPRINTLN('\'');
-    // Move the bytes to start of buffer. This should be safe.
-    strcpy(data, ptr);
-    retval = true;
-  } else {
-    DIAGPRINT("receiveData failed: "); DIAGPRINTLN(status);
-    bumpFailedCounter();
-  }
-  return retval;
 }
 
 /*
@@ -455,43 +450,48 @@ bool sendKeyValueAndWaitForAck(const char *parm, const char *val)
 {
   bool retval = false;
   uint8_t status;
-  char line[60];
-  char data[40];
-  char *ptr = line;
+  char cmd[60];
+  char reply[40];
+  char *ptr;
 
-  // A bit clumsy code, because using snprintf causes much larger code size
-  strcpy(ptr, XRF_REQUEST_PREFIX);
-  ptr += strlen(ptr);
-  strcpy(ptr, parm);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  strcpy(ptr, slaveName);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  strcpy(ptr, val);
-  (void)xrf.sendData(line);
+  for (size_t i = 0; i < maxRetryCount; ++i) {
+    ptr = cmd;
+    prepareMasterRequest(cmd, parm);
+    ptr += strlen(ptr);
+    *ptr++ = ',';
+    strcpy(ptr, val);
 
-  // Wait until we get a line starting with slave name
-  ptr = line;
-  strcpy(ptr, slaveName);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  *ptr = '\0';
-  status = xrf.receiveData(line, data, sizeof(data));
-  if (status == XRF_OK) {
-    resetFailedCounter();
-    // Strip our slave prefix.
-    ptr = data + strlen(line);
-    DIAGPRINT(F("reply: '")); DIAGPRINT(ptr); DIAGPRINTLN('\'');
-    // We're just expecting "ack"
-    if (strcmp(ptr, "ack") == 0) {
-      retval = true;
+    status = xrf.sendDataAndWaitForReply(cmd, reply, sizeof(reply));
+    if (status == XRF_OK) {
+      // We're just expecting "ack"
+      if (strncmp(reply, "ack", 3) == 0) {
+        retval = true;
+        // Maybe there is a timestamp piggy back
+        consumeTimestamp(reply + 3);
+        break;
+      } else if (strncmp(reply, "nack", 3) == 0) {
+        // The caller will reset our "hello" status
+
+        // Maybe there is a timestamp piggy back
+        consumeTimestamp(reply + 4);
+        break;
+      }
     }
-  } else {
-    DIAGPRINT("receiveData failed: "); DIAGPRINTLN(status);
-    bumpFailedCounter();
   }
   return retval;
+}
+
+void consumeTimestamp(const char *data)
+{
+  char *eptr;
+  if (*data == ',') {
+    ++data;
+  }
+  uint32_t ts = strtoul(data, &eptr, 0);
+  if (eptr != data) {
+    setRtc(ts);
+    doneTs = true;
+  }
 }
 
 /*
@@ -514,63 +514,51 @@ bool sendKeyValueAndWaitForAck(const char *parm, float val)
   return sendKeyValueAndWaitForAck(parm, buffer);
 }
 
-/*
- * A modified version of utoa which does the same as printf("%04X", val)
- */
-void myUtoa(uint16_t val, char *buf)
+void createDeviceName(char *name, char prefix)
 {
-  if (val < 0x1000) {
-    *buf++ = '0';
-    if (val < 0x100) {
-      *buf++ = '0';
-      if (val < 0x10) {
-        *buf++ = '0';
-      }
-    }
-  }
-  utoa(val, buf, 16);
-}
-
-void createSlaveName(uint8_t *buffer, size_t size)
-{
-  //dumpBuffer(buffer, size);
-  uint16_t crc1 = crc16_ccitt(buffer, 16);
-  uint16_t crc2 = crc16_ccitt(buffer + 16, 16);
-  char *ptr = slaveName;
-  *ptr++ = 'S';
+  uint8_t buffer[128];
+  dflash.readSecurityReg(buffer, 128);
+  /* An example of the second 64 bytes of the security register
+0D0414071A2D1F2600011204FFFFE8FF
+303032533636313216140AFFFFFFFFFF
+3E3E3E3E3E3C3E3E3E3C3E3C3C3E3E3C
+FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
+   */
+  //dumpBuffer(buffer + 64, 64);
+  uint16_t crc1 = crc16_ccitt(buffer + 64, 16);
+  uint16_t crc2 = crc16_ccitt(buffer + 64 + 16, 16);
+  char *ptr = name;
+  *ptr++ = prefix;
   myUtoa(crc1, ptr);
   ptr += 4;
   myUtoa(crc2, ptr);
   // String now has a \0 terminator
 }
 
-void bumpFailedCounter()
-{
-  if (++failedCounter > maxFailedCounter) {
-    redoHello();
-  }
-}
-
-void resetFailedCounter()
-{
-  failedCounter = 0;
-}
-
 void redoHello()
 {
   doneHello = false;
   doneTs = false;
-  nextUpload = 0;
+  nextSlaveUpload = 0;
   nextWakeUp = rtc.now().getEpoch();
 }
 
-void setRtc(uint32_t ts)
+/*
+ * Update the RTC with the new value
+ *
+ * If the change is less than a certain minimum then
+ * the RTC will not be updated
+ */
+void setRtc(uint32_t newTs)
 {
-  if (rtc.now().getEpoch() != ts) {
+  uint32_t oldTs = rtc.now().getEpoch();
+  int32_t diffTs = abs(newTs - oldTs);
+  // Only update the RTC if it differs more than N seconds
+  if (diffTs >= 2) {
     // Update the RTC
-    rtc.setEpoch(ts);
+    rtc.setEpoch(newTs);
     // Make sure we request new upload time, because RTC has changed
-    nextUpload = 0;
+    nextSlaveUpload = 0;
   }
 }
 
@@ -602,4 +590,45 @@ void dumpBuffer(uint8_t * buf, size_t size)
     DIAGPRINTLN();
     size -= size1;
   }
+}
+
+/*
+ * Create a hex digit representation of a byte buffer
+ */
+void bin2hex(char *ptr, size_t dstSize, uint8_t *data, size_t srcSize)
+{
+  if (dstSize > 0) {
+    // Leave room for a \0 character
+    --dstSize;
+  }
+  for (size_t i = 0; dstSize >= 2 && i < srcSize; ++i, ++data) {
+    myUtoa(*data, ptr);
+    ptr += 2;
+    dstSize -= 2;
+  }
+}
+
+/*
+ * A modified version of utoa which does the same as printf("%04X", val)
+ */
+void myUtoa(uint16_t val, char *buf)
+{
+  if (val < 0x1000) {
+    *buf++ = '0';
+    if (val < 0x100) {
+      *buf++ = '0';
+      if (val < 0x10) {
+        *buf++ = '0';
+      }
+    }
+  }
+  utoa(val, buf, 16);
+}
+
+void myUtoa(uint8_t val, char *buf)
+{
+  if (val < 0x10) {
+    *buf++ = '0';
+  }
+  utoa(val, buf, 16);
 }
