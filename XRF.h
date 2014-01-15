@@ -21,7 +21,7 @@
  */
 
 #include <stdint.h>
-#include <Stream.h>
+#include <Arduino.h>
 
 enum {
   XRF_OK = 0,
