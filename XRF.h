@@ -39,10 +39,15 @@ class XRF
 {
 public:
   XRF();
-
-  void init(Stream &stream,
-      const char *devName,
+  XRF(Stream &stream,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
+  XRF(Stream &stream,
+      const char *devName,
+      uint16_t panID,
+      uint8_t nrRetries=3, uint16_t retryTimeout=1000);
+
+  void init();
+  void init(const char *devName);
   void setFldSep(char fldSep) { _fldSep = fldSep; }
 
   uint8_t leaveCmndMode();

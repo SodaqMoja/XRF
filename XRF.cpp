@@ -29,9 +29,9 @@ XRF::XRF()
   _myStream = 0;
   _eol = '\n';
   _diagStream = 0;
-  _panID = 0x5AA5;
+  _panID = 0;
   _nrRetries = 3;
-  _retryTimeout = 2000;
+  _retryTimeout = 1000;
   _fldSep = ',';
   _inCmndMode = false;
   _sleepPin = 0;
@@ -40,23 +40,63 @@ XRF::XRF()
   _failedCounter = 0;
 }
 
-/*
-* Initialize XRF
-*
-* \param uart an instance of Stream for the connected XRF module
-* \param nrRetries how often to try to send a data packet when no ACK is received
-* \param retryTimeout number of milliseconds before retrying
-* \return nothing
-*/
-void XRF::init(Stream &stream,
-    const char *devName,
+XRF::XRF(Stream &stream,
     uint8_t nrRetries, uint16_t retryTimeout)
 {
   _myStream = &stream;
-  strncpy(_devName, devName, sizeof(_devName));
-  _devName[sizeof(_devName) - 1] = '\0';        // Enforce a NUL byte
+  _eol = '\n';
+  _diagStream = 0;
+  _panID = 0;
   _nrRetries = nrRetries;
   _retryTimeout = retryTimeout;
+  _fldSep = ',';
+  _inCmndMode = false;
+  _sleepPin = 0;
+  _sleepMode = 0;
+  memset(_devName, 0, sizeof(_devName));
+  _failedCounter = 0;
+}
+
+XRF::XRF(Stream &stream,
+    const char *devName,
+    uint16_t panID,
+    uint8_t nrRetries, uint16_t retryTimeout)
+{
+  _myStream = &stream;
+  _eol = '\n';
+  _diagStream = 0;
+  _panID = panID;
+  _nrRetries = nrRetries;
+  _retryTimeout = retryTimeout;
+  _fldSep = ',';
+  _inCmndMode = false;
+  _sleepPin = 0;
+  _sleepMode = 0;
+  memset(_devName, 0, sizeof(_devName));
+  strncpy(_devName, devName, sizeof(_devName) - 1);
+  _failedCounter = 0;
+}
+
+/*
+* Initialize XRF
+*
+* Do the initialisation of the device.
+*  - set the panID
+*  - set the sleepMode
+*/
+void XRF::init()
+{
+  // Setting panID must succeed
+  while (_panID && setPanID(_panID) != XRF_OK) {
+  }
+  while (_sleepMode && _sleepPin && setSleepMode(_sleepMode, _sleepPin)) {
+  }
+  (void)leaveCmndMode();
+}
+void XRF::init(const char *devName)
+{
+  strncpy(_devName, devName, sizeof(_devName) - 1);
+  init();
 }
 
 /*
