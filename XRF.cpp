@@ -35,7 +35,9 @@ XRF::XRF()
   _fldSep = ',';
   _inCmndMode = false;
   _sleepPin = 0;
+  _sleepPinStatus = 0xFF;
   _sleepMode = 0;
+  _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   _failedCounter = 0;
 }
@@ -52,7 +54,9 @@ XRF::XRF(Stream &stream,
   _fldSep = ',';
   _inCmndMode = false;
   _sleepPin = 0;
+  _sleepPinStatus = 0xFF;
   _sleepMode = 0;
+  _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   _failedCounter = 0;
 }
@@ -71,7 +75,9 @@ XRF::XRF(Stream &stream,
   _fldSep = ',';
   _inCmndMode = false;
   _sleepPin = 0;
+  _sleepPinStatus = 0xFF;
   _sleepMode = 0;
+  _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   strncpy(_devName, devName, sizeof(_devName) - 1);
   _failedCounter = 0;
@@ -528,10 +534,12 @@ uint8_t XRF::setSleepMode(uint8_t mode, uint8_t sleepPin)
   case 1:
     // Set pin HIGH to not sleep
     digitalWrite(_sleepPin, HIGH);
+    _sleepPinStatus = HIGH;
     break;
   case 2:
     // Set pin LOW to not sleep
     digitalWrite(_sleepPin, LOW);
+    _sleepPinStatus = LOW;
     break;
   default:
     break;
@@ -553,41 +561,54 @@ uint8_t XRF::setSleepMode(uint8_t mode, uint8_t sleepPin)
 
 void XRF::sleep()
 {
-  // Allow a bit of time to write whatever is in the output buffer
-  delay(1000);
+  uint8_t newStatus = 0xFF;
   switch (_sleepMode) {
   case 0:
     // No-op
     break;
   case 1:
-    // Set pin LOW to sleep
-    digitalWrite(_sleepPin, LOW);
+    newStatus = LOW;
     break;
   case 2:
-    // Set pin HIGH to sleep
-    digitalWrite(_sleepPin, HIGH);
+    newStatus = HIGH;
     break;
   default:
     break;
   }
+  setSleepPin(newStatus, true);
 }
 
 void XRF::wakeUp()
 {
+  uint8_t newStatus = 0xFF;
   switch (_sleepMode) {
   case 0:
     // No-op
     break;
   case 1:
-    // Set pin HIGH to wake up
-    digitalWrite(_sleepPin, HIGH);
+    newStatus = HIGH;
     break;
   case 2:
-    // Set pin LOW to wake up
-    digitalWrite(_sleepPin, LOW);
+    newStatus = LOW;
     break;
   default:
     break;
+  }
+  setSleepPin(newStatus, false);
+}
+
+void XRF::setSleepPin(uint8_t newStatus, bool isSleep)
+{
+  if (newStatus != 0xFF && _sleepPinStatus != newStatus) {
+    diagPrint(isSleep ? F("go to sleep") : F("wake up"));
+    diagPrint(F(", pin setting ")); diagPrintLn(newStatus == LOW ? F("LOW") : F("HIGH"));
+    if (isSleep) {
+      // Allow a bit of time to write whatever is in the output buffer
+      delay(_sleepDelay);
+    }
+    // Set pin to sleep
+    digitalWrite(_sleepPin, newStatus);
+    _sleepPinStatus = newStatus;
   }
 }
 
@@ -661,7 +682,7 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
       }
     }
   }
-  diagPrintLn(F("readLine timed out"));
+  //diagPrintLn(F("readLine timed out"));
   return false;         // This indicates: timed out
 
 ok:

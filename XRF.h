@@ -101,6 +101,8 @@ private:
   uint8_t waitForReply(char *reply, size_t replySize);
   uint8_t waitForAck();
 
+  void setSleepPin(uint8_t newStatus, bool isSleep);
+
   bool readLine(char *buffer, size_t size, uint16_t timeout=2000);
   uint8_t waitForOK(uint16_t timeout=2000);
   void sendCommand(const char *cmd);
@@ -152,7 +154,9 @@ private:
   char _fldSep;
   bool _inCmndMode;
   uint8_t _sleepPin;
+  uint8_t _sleepPinStatus;
   uint8_t _sleepMode;
+  uint16_t _sleepDelay;
   char _devName[10];
   size_t _failedCounter;
 };
