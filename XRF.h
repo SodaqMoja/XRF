@@ -1,7 +1,7 @@
 #ifndef XFR_H_
 #define XRF_H_
 /*
- * Copyright (c) 2013 Kees Bakker.  All rights reserved.
+ * Copyright (c) 2013-2014 Kees Bakker.  All rights reserved.
  *
  * This file is part of the XRF library for Arduino.
  *
@@ -23,9 +23,15 @@
 #include <stdint.h>
 #include <Arduino.h>
 
+/*
+ * Make this an undef (or comment) to disable diagnostic
+ */
+#define XRF_ENABLE_DIAG 1
+
 enum {
   XRF_OK = 0,
   XRF_NOT_OK,                   // Failed to see OK
+  XRF_NACK,
   XRF_TIMEOUT,
   XRF_MAXRETRY,
   XRF_CRC_ERROR,
@@ -69,18 +75,22 @@ public:
 
   void flushInput();
 
-  void sendData(const char *data);
-  uint8_t receiveMyData(char *data, size_t size, uint16_t timeout=3000);
-  uint8_t receiveAnyData(char *data, size_t size, uint16_t timeout=3000);
+  uint8_t sendData(const char *dest, const char *data);
+  uint8_t receiveData(char *source, size_t sourceSize, char *data, size_t dataSize, uint16_t timeout=3000);
   int available() { return _myStream->available(); }
 
-  uint8_t sendDataAndWaitForReply(const char *data, char *reply, size_t replySize);
+  uint8_t sendDataAndWaitForReply(const char *dest, const char *data, char *reply, size_t replySize);
 
   size_t getFailedCounter() { return _failedCounter; }
 
   void setDiag(Stream &stream) { _diagStream = &stream; }
 
 private:
+  void sendDataNoWait(const char *dest, const char *data);
+  uint8_t receiveDataNoAck(char *source, size_t sourceSize, char *data, size_t dataSize, uint16_t timeout=3000);
+  uint8_t waitForReply(char *reply, size_t replySize);
+  uint8_t waitForAck();
+
   bool readLine(char *buffer, size_t size, uint16_t timeout=2000);
   uint8_t waitForOK(uint16_t timeout=2000);
   void sendCommand(const char *cmd);
@@ -98,6 +108,7 @@ private:
   uint16_t crc16_xmodem(uint8_t * buf, size_t len);
 
   // TODO There must be an easier way to do this.
+#if XRF_ENABLE_DIAG
   void diagPrint(const char *str) { if (_diagStream) _diagStream->print(str); }
   void diagPrintLn(const char *str) { if (_diagStream) _diagStream->println(str); }
   void diagPrint(const __FlashStringHelper *str) { if (_diagStream) _diagStream->print(str); }
@@ -108,6 +119,18 @@ private:
   void diagPrintLn(unsigned int u, int base=DEC) { if (_diagStream) _diagStream->println(u, base); }
   void diagPrint(char c) { if (_diagStream) _diagStream->print(c); }
   void diagPrintLn(char c) { if (_diagStream) _diagStream->println(c); }
+#else
+  void diagPrint(const char *str) {}
+  void diagPrintLn(const char *str) {}
+  void diagPrint(const __FlashStringHelper *str) {}
+  void diagPrintLn(const __FlashStringHelper *str) {}
+  void diagPrint(int i, int base=DEC) {}
+  void diagPrintLn(int i, int base=DEC) {}
+  void diagPrint(unsigned int u, int base=DEC) {}
+  void diagPrintLn(unsigned int u, int base=DEC) {}
+  void diagPrint(char c) {}
+  void diagPrintLn(char c) {}
+#endif
 
 private:
   Stream *_myStream;

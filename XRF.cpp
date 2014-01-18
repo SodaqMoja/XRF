@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013 Kees Bakker.  All rights reserved.
+ * Copyright (c) 2013-2014 Kees Bakker.  All rights reserved.
  *
  * This file is part of the XRF library for Arduino.
  *
@@ -105,31 +105,129 @@ void XRF::init(const char *devName)
 * The data is sent as ASCII. The CRC is appended and an end-of-line
 * is added too.
 *
-* \param data is a pointer to the ASCII data
+* \param dest the destination
+* \param data the ASCII data
 */
-void XRF::sendData(const char *data)
+uint8_t XRF::sendData(const char *dest, const char *data)
 {
-  diagPrint(F("SendData: '")); diagPrint(data); diagPrintLn('\'');
+  //diagPrint(F("SendData: dest='")); diagPrint(dest); diagPrint('\'');
+  //diagPrint(F(" data='")); diagPrint(data); diagPrintLn('\'');
 
   // All current input can be flushed. It is not for us.
   flushInput();
 
-  uint16_t crc = crc16_xmodem((uint8_t *)data, strlen(data));
-  _myStream->print(data);
-  _myStream->print(_fldSep);
-  _myStream->print(crc);
+  uint8_t status = XRF_UNKNOWN;
+  for (size_t i = 0; i < _nrRetries; ++i) {
+
+    sendDataNoWait(dest, data);
+
+    // Wait for an ACK
+    status = waitForAck();
+    if (status == XRF_OK) {
+      //diagPrint(F("reply2: '")); diagPrint(reply); diagPrintLn('\'');
+      break;
+    }
+    if (status == XRF_NACK) {
+      break;
+    }
+    status = XRF_MAXRETRY;
+  }
+
+  return status;
+}
+
+/*
+* Send ASCII data via the XRF device
+*
+* The data is sent as ASCII. The CRC is appended and an end-of-line
+* is added too.
+*
+* \param dest the destination
+* \param data the ASCII data
+*/
+void XRF::sendDataNoWait(const char *dest, const char *data)
+{
+  //diagPrint(F("SendDataNoWait: dest='")); diagPrint(dest); diagPrint('\'');
+  //diagPrint(F(" data='")); diagPrint(data); diagPrintLn('\'');
+
+  String line;
+  line.reserve(60);
+  line += dest;
+  line += _fldSep;
+  line += _devName;
+  line += _fldSep;
+  line += data;
+  const char *cstr = line.c_str();
+  uint16_t crc = crc16_xmodem((uint8_t *)cstr, line.length());
+  line += _fldSep;
+  line += crc;
+
+  _myStream->print(cstr);
   _myStream->print(_eol);
+}
+
+/*
+ * Wait for an "ack"
+ *
+ * The syntax of the ack message (stripped <dest> and <crc>) is
+ *   <source> ',' "ack"
+ */
+uint8_t XRF::waitForAck()
+{
+  uint8_t status;
+  char reply[40];               // We need for the whole line. <dest> ',' <source> ',' "ack", <crc>
+  const char *ptr;
+
+  status = receiveDataNoAck(NULL, 0, reply, sizeof(reply));
+  if (status == XRF_OK) {
+    // The first part must be our name
+    size_t len = strlen(_devName);
+    if (strncmp(reply, _devName, len) == 0) {
+      ptr = reply + len;
+      if (*ptr == _fldSep) {
+        ++ptr;
+      }
+      if (strncmp(ptr, "ack", 3) == 0) {
+        return XRF_OK;
+      }
+      if (strncmp(ptr, "nack", 4) == 0) {
+        return XRF_NACK;
+      }
+    }
+  }
+
+  return status;
+}
+
+uint8_t XRF::receiveData(char *source, size_t sourceSize,
+    char *data, size_t dataSize, uint16_t timeout)
+{
+  char source2[12];
+  uint8_t status;
+  if (source) {
+    memset(source, 0, sourceSize);
+  }
+  status = receiveDataNoAck(source2, sizeof(source2), data, dataSize, timeout);
+  if (status == XRF_OK) {
+    // Send an ack
+    sendDataNoWait(source2, "ack");
+    if (source) {
+      strncpy(source, source2, sourceSize - 1);
+    }
+  }
+  return status;
 }
 
 /*
  * Wait for a line of text that starts with the prefix
  *
  * \param data a pointer to store the result
- * \param size the maximum number of bytes to store in the result buffer (including \0)
+ * \param dataSize the maximum number of bytes to store in the result buffer (including \0)
  * \param timeout the maximum number of milliseconds for the whole operation
  * \return XRF_OK if the operation was successful or else an error code
  */
-uint8_t XRF::receiveMyData(char *data, size_t size, uint16_t timeout)
+uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
+    char *data, size_t dataSize, uint16_t timeout)
 {
   uint8_t status = XRF_TIMEOUT;
   char prefix[16];              // _devName plus comma plus \0
@@ -143,10 +241,11 @@ uint8_t XRF::receiveMyData(char *data, size_t size, uint16_t timeout)
   *ptr++ = _fldSep;
   *ptr = '\0';
 
-  //diagPrint(F("receiveData prefix: '")); diagPrint(prefix); diagPrintLn('\'');
+  //diagPrint(F("receiveMyDataNoAck prefix: '")); diagPrint(prefix); diagPrintLn('\'');
   uint32_t ts_max = millis() + timeout;
   while (!isTimedOut(ts_max)) {
-    if (readLine(data, size)) {
+    if (readLine(data, dataSize)) {
+      //diagPrint(F("receiveMyDataNoAck data'")); diagPrint(data); diagPrintLn('\'');
       size_t len = strlen(prefix);
       // Does the prefix match?
       if (strncmp(data, prefix, len) == 0) {
@@ -158,13 +257,26 @@ uint8_t XRF::receiveMyData(char *data, size_t size, uint16_t timeout)
           // Strip the checksum
           *cptr = '\0';
           uint16_t crc1 = crc16_xmodem((uint8_t *)data, strlen(data));
-          //diagPrint(F("receiveData: '")); diagPrint(data); diagPrintLn('\'');
-          //diagPrint(F("receiveData checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
+          //diagPrint(F("receiveMyDataNoAck: '")); diagPrint(data); diagPrintLn('\'');
+          //diagPrint(F("receiveMyDataNoAck checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
           if (crc1 == crc) {
             _failedCounter = 0;
             // Strip the prefix from the reply
             strcpy(data, data + len);
-            return XRF_OK;
+            //diagPrint(F("receiveMyDataNoAck: 2 '")); diagPrint(data); diagPrintLn('\'');
+
+            // The first field is the sender address
+            cptr = strchr(data, _fldSep);
+            if (cptr != NULL) {
+              *cptr = '\0';
+              //diagPrint(F("receiveMyDataNoAck: 3 '")); diagPrint(data); diagPrintLn('\'');
+              if (source) {
+                strncpy(source, data, sourceSize - 1);
+              }
+              // Strip the source address
+              strcpy(data, cptr + 1);
+              return XRF_OK;
+            }
           }
           status = XRF_CRC_ERROR;
         }
@@ -177,63 +289,25 @@ uint8_t XRF::receiveMyData(char *data, size_t size, uint16_t timeout)
 }
 
 /*
- * Wait for a line of text with a checksum
- *
- * First step is to simply receive a line. Then it tries
- * to find a checksum at the end of the line. The checksum
- * is a comma and a number. The number is the checksum of
- * all the characters in the line upto (not including the
- * comma and the number)
- *
- * \param data a pointer to store the result
- * \param size the maximum number of bytes to store in the result buffer (including \0)
- * \param timeout the maximum number of milliseconds for the whole operation
- * \return XRF_OK if the operation was successful or else an error code
- */
-uint8_t XRF::receiveAnyData(char *data, size_t size, uint16_t timeout)
-{
-  uint8_t status = XRF_TIMEOUT;
-  // Read a line
-  if (readLine(data, size, timeout)) {
-    uint16_t crc;
-    char *cptr;
-    if (findCrc(data, &crc, &cptr)) {
-      //diagPrint(F("receiveData crc: ")); diagPrintLn(crc);
-      // Strip the checksum
-      *cptr = '\0';
-      uint16_t crc1 = crc16_xmodem((uint8_t *)data, strlen(data));
-      //diagPrint(F("receiveData: '")); diagPrint(data); diagPrintLn('\'');
-      //diagPrint(F("receiveData checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
-      if (crc1 == crc) {
-        _failedCounter = 0;
-        return XRF_OK;
-      }
-      status = XRF_CRC_ERROR;
-    }
-  }
-  ++_failedCounter;
-  return status;
-}
-
-/*
  * Send a command and wait for a reply
  *
- * It totally depends on the other devices in the XRF network which
- * device it is meant for. One possible scheme is to prefix the command
- * with the name of the target device, and a separator (comma?)
+ * This is a convenience function for the application level.
+ * Send a packet and expect a packet in return. Both packets must
+ * be acked by the XRF send and receive functions.
  *
+ * \param dest the destination where to send the packet to
  * \param data the command to send
  * \param reply a buffer to store the reply when/if it is received
  * \param replySize the size of the "reply" buffer
  */
-uint8_t XRF::sendDataAndWaitForReply(const char *data, char *reply, size_t replySize)
+uint8_t XRF::sendDataAndWaitForReply(const char *dest, const char *data, char *reply, size_t replySize)
 {
   uint8_t status = XRF_MAXRETRY;
 
   for (size_t i = 0; i < _nrRetries; ++i) {
-    sendData(data);
+    sendData(dest, data);
 
-    status = receiveMyData(reply, replySize);
+    status = receiveData(NULL, 0, reply, replySize);
     if (status == XRF_OK) {
       //diagPrint(F("reply2: '")); diagPrint(reply); diagPrintLn('\'');
       break;
@@ -461,6 +535,7 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
 {
   size_t len;
   bool seenCR = false;
+  bool doneTooLong = false;
   uint32_t ts_waitLF = 0;
   int c;
 
@@ -469,7 +544,8 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
   while (!isTimedOut(ts_max)) {
     if (seenCR) {
       c = _myStream->peek();
-      if (c != '\n' || isTimedOut(ts_waitLF)) {
+      // ts_waitLF is guaranteed to be non-zero
+      if ((c != -1 && c != '\n') || isTimedOut(ts_waitLF)) {
         // Line ended with just <CR>. That's OK too.
         goto ok;
       }
@@ -489,6 +565,11 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
     } else {
       if (len < size - 1) {
         buffer[len++] = c;
+      } else {
+        if (!doneTooLong) {
+          diagPrint(F("readLine:  line too long '")); diagPrint(buffer); diagPrintLn('\'');
+          doneTooLong = true;
+        }
       }
     }
   }
