@@ -52,6 +52,8 @@ public:
       uint16_t panID,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
 
+  void config(uint8_t dataRate, uint8_t packetSize=0, uint16_t packetTimeout=0);
+
   void init();
   void init(const char *devName);
   void setFldSep(char fldSep) { _fldSep = fldSep; }
@@ -68,6 +70,14 @@ public:
   uint8_t setDataRate(uint8_t rate);
   uint8_t setATDR(uint8_t rate) { return setDataRate(rate); }
   uint8_t getDataRate();
+
+  uint8_t setPacketSize(uint8_t size);
+  uint8_t setATPK(uint8_t size) { return setPacketSize(size); }
+  uint8_t getPacketSize();
+
+  uint8_t setPacketTimeout(uint16_t timeout);
+  uint8_t setATRO(uint16_t timeout) { return setPacketTimeout(timeout); }
+  uint16_t getPacketTimeout();
 
   uint8_t setSleepMode(uint8_t mode, uint8_t sleepPin);
   void sleep();

@@ -78,6 +78,22 @@ XRF::XRF(Stream &stream,
 }
 
 /*
+ * Configure a few extra parameters
+ */
+void XRF::config(uint8_t dataRate, uint8_t packetSize, uint16_t packetTimeout)
+{
+  if (dataRate) {
+    setDataRate(dataRate);
+  }
+  if (packetSize) {
+    setPacketSize(packetSize);
+  }
+  if (packetTimeout) {
+    setPacketTimeout(packetTimeout);
+  }
+}
+
+/*
 * Initialize XRF
 *
 * Do the initialisation of the device.
@@ -408,6 +424,78 @@ uint8_t XRF::getDataRate()
 {
   uint32_t val;
   if (!sendATxGetHexNumber("ATDR", &val)) {
+    return 0;
+  }
+  return val;
+}
+
+/*
+* Set the packet size
+*
+* This function sets the maximum radio packet data length
+*
+* From the documentation:
+*   "minimum value is 1 maximum is F0 (decimal 240)
+*    Default 0C (12 data bytes)
+*    Note:  The XRF will not receive packets that are longer than this
+*    setting, so it needs to be set on all connected XRFs.
+*    Note: If you have a much larger packet size than you expect to send
+*    to the node then you will find that spurious packets are more frequent
+*    and therefore more packets will be dropped."
+*
+* \param size is maximum radio packet data length
+* \return XRF_OK if the operation was successful or else an error code
+*/
+uint8_t XRF::setPacketSize(uint8_t size)
+{
+  return sendATxSetHexNumber("ATPK", size);
+}
+
+/*
+ * Get the current maximum radio packet data length
+ *
+ * \return the
+ * \return 0 this indicates an error
+ */
+uint8_t XRF::getPacketSize()
+{
+  uint32_t val;
+  if (!sendATxGetHexNumber("ATPK", &val)) {
+    return 0;
+  }
+  return val;
+}
+
+/*
+* Set the Packet timeout
+*
+* This function sets the Packet timeout
+*
+* From the documentation:
+*   "The time in milliseconds before a packet is sent if packet is not
+*    complete (hex)
+*    Range 1 to FFFF (65535)
+*    Default is 10 (16mS) - from XRF/ERF firmware 0.41, URF firmware 0.20
+*    onwards, previous default was 64 (100 mS)"
+*
+* \param size is the Packet timeout
+* \return XRF_OK if the operation was successful or else an error code
+*/
+uint8_t XRF::setPacketTimeout(uint16_t timeout)
+{
+  return sendATxSetHexNumber("ATRO", timeout);
+}
+
+/*
+ * Get the current maximum radio packet data length
+ *
+ * \return the
+ * \return 0 this indicates an error
+ */
+uint16_t XRF::getPacketTimeout()
+{
+  uint32_t val;
+  if (!sendATxGetHexNumber("ATRO", &val)) {
     return 0;
   }
   return val;
