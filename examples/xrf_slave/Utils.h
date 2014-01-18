@@ -15,6 +15,7 @@
 #include <Arduino.h>
 
 uint16_t crc16_ccitt(uint8_t * buf, size_t len);
+uint16_t crc16_xmodem(uint8_t * buf, size_t len);
 
 static inline bool isTimedOut(uint32_t ts)
 {

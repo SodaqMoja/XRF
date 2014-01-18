@@ -5,24 +5,27 @@
  */
 
 
-#define XRF_DEMO_PANID          0x5AA5
-#define XRF_REQUEST_PREFIX      "M,"
-#define ADC_AREF                3.3     // DEFAULT see wiring_analog.c
-
 #include <string.h>
 #include <avr/sleep.h>
 #include <avr/wdt.h>
 
 #include <Arduino.h>
-#include <SoftwareSerial.h>
 #include <Wire.h>
 #include <Sodaq_DS3231.h>
 #include <Sodaq_dataflash.h>
+#include <SoftwareSerial.h>
 #include <XRF.h>
 
 // Our own libraries
 #include "Diag.h"
 #include "Utils.h"
+
+#define ADC_AREF                3.3     // DEFAULT see wiring_analog.c
+
+// Default panID is 0x5AA5. That makes it simple to plug in a monitor
+// For more security via obscurity we could pick another
+#define XRF_PANID               0x5AA5 // 0x1405
+#define XRF_MASTER_NAME         "M"
 
 #define DF_MOSI         11
 #define DF_MISO         12
@@ -36,6 +39,10 @@
 // The Xbee DTR is connected to the XRF sleep pin
 #define XBEEDTR_PIN     7
 
+#define GROVEPWR_PIN    6
+#define GROVEPWR_OFF    LOW
+#define GROVEPWR_ON     HIGH
+
 // Only needed if DIAG is enabled
 #define DIAGPORT_RX     4
 #define DIAGPORT_TX     5
@@ -47,16 +54,30 @@ SoftwareSerial diagport(DIAGPORT_RX, DIAGPORT_TX);
 #endif
 
 //#########       variables      #############
-XRF xrf;
-char slaveName[10];     // This must hold 'S' plus a 8 hexdigit number and a \0
 
-struct DataRecord_t
+/*
+ * This is the data record as we communicate between
+ * gms_slave and gms_master.
+ */
+struct DeviceDataRecord_t
 {
   uint32_t ts;
   float battVolt;
   float temp;
 };
+typedef struct DeviceDataRecord_t DeviceDataRecord_t;
+
+#define DEV_NAME_LEN 10
+struct DataRecord_t
+{
+  char devName[DEV_NAME_LEN];
+  DeviceDataRecord_t	dr;
+};
 typedef struct DataRecord_t DataRecord_t;
+
+XRF xrf(Serial);
+char slaveName[DEV_NAME_LEN];     // This must hold 'S' plus a 8 hexdigit number and a \0
+
 DataRecord_t dataRecord;
 
 // A flag to indicate that a WDT interrupt happened.
@@ -108,6 +129,9 @@ void setup()
   /* Clear WDRF in MCUSR */
   MCUSR &= ~_BV(WDRF);
 
+  pinMode(GROVEPWR_PIN, OUTPUT);
+  digitalWrite(GROVEPWR_PIN, GROVEPWR_OFF);
+
 #ifdef ENABLE_DIAG
   diagport.begin(9600);
 #endif
@@ -118,21 +142,16 @@ void setup()
   dflash.init(DF_MISO, DF_MOSI, DF_SPICLOCK, DF_SLAVESELECT);
   createDeviceName(slaveName, 'S');
   DIAGPRINT(F("slaveName: '")); DIAGPRINT(slaveName); DIAGPRINTLN('\'');
+  strcpy(dataRecord.devName, slaveName);
 
   Serial.begin(9600);
-  xrf.init(Serial, slaveName);
+  xrf.init(slaveName);
 #ifdef ENABLE_DIAG
   xrf.setDiag(diagport);
 #endif
   delay(100);
   DIAGPRINTLN("XRF slave");
 
-  // Setting panID must succeed
-  while (xrf.setPanID(XRF_DEMO_PANID) != XRF_OK) {
-  }
-  while (xrf.setSleepMode(1, XBEEDTR_PIN)) {
-  }
-  (void)xrf.leaveCmndMode();
   Serial.print("XRF slave "); Serial.println(slaveName);
 
   redoHello();
@@ -197,6 +216,10 @@ void loop()
     ts = rtc.now().getEpoch();
     if (ts >= nextSlaveUpload) {
       doUpload();
+      if (doneHello) {
+        // If we didn't get an NACK then we can ask for "next"
+        doAskNextUpload();
+      }
 
       Serial.print("XRF slave ");
       Serial.print(slaveName);
@@ -301,36 +324,17 @@ void gotoSleep()
  */
 void doReadSensors()
 {
-  DataRecord_t *dr = &dataRecord;
+  DeviceDataRecord_t *dr = &dataRecord.dr;
   dr->ts = rtc.now().getEpoch();
   dr->battVolt = getRealBatteryVoltage();
+  dr->temp = rtc.getTemperature();
+
   DIAGPRINT(dr->ts);
   DIAGPRINT(" Battery Voltage: "); DIAGPRINTLN(dr->battVolt);
   // While testing, send it over the XRF air too.
   Serial.print(slaveName); Serial.print(' '); Serial.print(dr->ts);
   Serial.print(" Battery Voltage: "); Serial.println(dr->battVolt);
-  dr->temp = rtc.getTemperature();
   DIAGPRINT("RTC Temperature: "); DIAGPRINTLN(dr->temp);
-}
-
-/*
- * Prepare the request to be send to the master
- *
- * The syntax of the result is:
- *   <master prefix> ',' <cmd> ',' <slaveName>
- * Beware to supply a buffer that is large enough.
- */
-void prepareMasterRequest(char *buffer, const char *cmd)
-{
-  char *ptr;
-  // Prepare the request
-  ptr = buffer;
-  strcpy(ptr, XRF_REQUEST_PREFIX);
-  ptr += strlen(ptr);
-  strcpy(ptr, cmd);
-  ptr += strlen(ptr);
-  *ptr++ = ',';
-  strcpy(ptr, slaveName);
 }
 
 /*
@@ -338,19 +342,8 @@ void prepareMasterRequest(char *buffer, const char *cmd)
  */
 void doSendHello()
 {
-  char cmd[30];
-  char reply[40];
-
-  prepareMasterRequest(cmd, "hello");
-  if (xrf.sendDataAndWaitForReply(cmd, reply, sizeof(reply)) == XRF_OK) {
-    DIAGPRINT(F("hello reply: '")); DIAGPRINT(reply); DIAGPRINTLN('\'');
-    if (strncmp(reply, "ack", 3) == 0) {
-      doneHello = true;
-      DIAGPRINTLN("receive hello ack: ");
-      // Maybe there is a timestamp piggy back
-      consumeTimestamp(reply + 3);
-    } else {
-    }
+  if (xrf.sendData(XRF_MASTER_NAME, "hello") == XRF_OK) {
+    doneHello = true;
   }
 }
 
@@ -361,13 +354,10 @@ void doSendHello()
  */
 void doSendTs()
 {
-  char cmd[30];
-  char data[40];
+  char reply[40];
 
-  prepareMasterRequest(cmd, "ts");
-  if (xrf.sendDataAndWaitForReply(cmd, data, sizeof(data)) == XRF_OK) {
-    DIAGPRINT(F("ts reply: '")); DIAGPRINT(data); DIAGPRINTLN('\'');
-    consumeTimestamp(data);
+  if (xrf.sendDataAndWaitForReply(XRF_MASTER_NAME, "ts", reply, sizeof(reply)) == XRF_OK) {
+    consumeTimestamp(reply);
   }
 }
 
@@ -379,14 +369,11 @@ void doSendTs()
  */
 void doAskNextUpload()
 {
-  char cmd[30];
-  char reply[60];
+  char reply[40];
   char *ptr;
   char *eptr;
 
-  prepareMasterRequest(cmd, "next");
-  if (xrf.sendDataAndWaitForReply(cmd, reply, sizeof(reply)) == XRF_OK) {
-    // Expecting a number
+  if (xrf.sendDataAndWaitForReply(XRF_MASTER_NAME, "next", reply, sizeof(reply)) == XRF_OK) {
     ptr = reply;
     uint32_t ts = strtoul(ptr, &eptr, 0);
     if (eptr != ptr) {
@@ -417,7 +404,6 @@ void doAskNextUpload()
  */
 void doUpload()
 {
-  // TODO
   DIAGPRINT("doUpload: "); DIAGPRINTLN(nextSlaveUpload);
 
   doReadSensors();
@@ -448,37 +434,12 @@ void doUpload()
  */
 bool sendKeyValueAndWaitForAck(const char *parm, const char *val)
 {
-  bool retval = false;
-  uint8_t status;
-  char cmd[60];
-  char reply[40];
-  char *ptr;
+  String line;
+  line += parm;
+  line += ',';
+  line += val;
 
-  for (size_t i = 0; i < maxRetryCount; ++i) {
-    ptr = cmd;
-    prepareMasterRequest(cmd, parm);
-    ptr += strlen(ptr);
-    *ptr++ = ',';
-    strcpy(ptr, val);
-
-    status = xrf.sendDataAndWaitForReply(cmd, reply, sizeof(reply));
-    if (status == XRF_OK) {
-      // We're just expecting "ack"
-      if (strncmp(reply, "ack", 3) == 0) {
-        retval = true;
-        // Maybe there is a timestamp piggy back
-        consumeTimestamp(reply + 3);
-        break;
-      } else if (strncmp(reply, "nack", 3) == 0) {
-        // The caller will reset our "hello" status
-
-        // Maybe there is a timestamp piggy back
-        consumeTimestamp(reply + 4);
-        break;
-      }
-    }
-  }
-  return retval;
+  return xrf.sendData(XRF_MASTER_NAME, line.c_str()) == XRF_OK;
 }
 
 void consumeTimestamp(const char *data)
