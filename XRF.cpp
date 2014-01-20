@@ -43,12 +43,13 @@ XRF::XRF()
 }
 
 XRF::XRF(Stream &stream,
+    uint16_t panID,
     uint8_t nrRetries, uint16_t retryTimeout)
 {
   _myStream = &stream;
   _eol = '\n';
   _diagStream = 0;
-  _panID = 0;
+  _panID = panID;
   _nrRetries = nrRetries;
   _retryTimeout = retryTimeout;
   _fldSep = ',';
@@ -62,8 +63,8 @@ XRF::XRF(Stream &stream,
 }
 
 XRF::XRF(Stream &stream,
-    const char *devName,
     uint16_t panID,
+    const char *devName,
     uint8_t nrRetries, uint16_t retryTimeout)
 {
   _myStream = &stream;
@@ -533,11 +534,13 @@ uint8_t XRF::setSleepMode(uint8_t mode, uint8_t sleepPin)
     break;
   case 1:
     // Set pin HIGH to not sleep
+    pinMode(_sleepPin, OUTPUT);
     digitalWrite(_sleepPin, HIGH);
     _sleepPinStatus = HIGH;
     break;
   case 2:
     // Set pin LOW to not sleep
+    pinMode(_sleepPin, OUTPUT);
     digitalWrite(_sleepPin, LOW);
     _sleepPinStatus = LOW;
     break;
@@ -676,6 +679,7 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
         buffer[len++] = c;
       } else {
         if (!doneTooLong) {
+          buffer[len] = '\0';
           diagPrint(F("readLine:  line too long '")); diagPrint(buffer); diagPrintLn('\'');
           doneTooLong = true;
         }
@@ -686,7 +690,7 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
   return false;         // This indicates: timed out
 
 ok:
-  buffer[len++] = '\0';
+  buffer[len] = '\0';
   //diagPrint(F("readLine: '")); diagPrint(buffer); diagPrintLn('\'');
   return true;
 }
@@ -705,6 +709,7 @@ ok:
 uint8_t XRF::enterCmndMode()
 {
   uint8_t status;
+
   if (_inCmndMode) {
     // Check if we are really in Command Mode
     sendCommand("AT");
@@ -715,18 +720,20 @@ uint8_t XRF::enterCmndMode()
     _inCmndMode = false;
   }
 
-  diagPrintLn(F(">> +++"));
-  // delay 1 second
-  delay(1000);
-  _myStream->print("+++");
-  delay(500);           // This could be up to 1000, but then we could miss the OK
-  // Flush any chars that were received in the meantime
-  flushInput();
+  for (size_t i = 0; !_inCmndMode && i < _nrRetries; ++i) {
+    diagPrintLn(F(">> +++"));
+    // delay 1 second
+    delay(1000);
+    _myStream->print("+++");
+    delay(500);           // This could be up to 1000, but then we could miss the OK
+    // Flush any chars that were received in the meantime
+    flushInput();
 
-  // wait until it replies with "OK"
-  status = waitForOK();
-  _inCmndMode = status == XRF_OK;
-  return status;
+    // wait until it replies with "OK"
+    status = waitForOK();
+    _inCmndMode = status == XRF_OK;
+  }
+  return _inCmndMode ? XRF_OK : XRF_TIMEOUT;
 }
 
 uint8_t XRF::leaveCmndMode()

@@ -45,11 +45,13 @@ class XRF
 {
 public:
   XRF();
+  XRF(Stream &stream);
   XRF(Stream &stream,
+      uint16_t panID,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
   XRF(Stream &stream,
-      const char *devName,
       uint16_t panID,
+      const char *devName,
       uint8_t nrRetries=3, uint16_t retryTimeout=1000);
 
   void config(uint8_t dataRate, uint8_t packetSize=0, uint16_t packetTimeout=0);
