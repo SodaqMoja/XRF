@@ -372,7 +372,6 @@ void doTimedActions()
     if (ptr->triggerTS && (long)(ts - ptr->triggerTS) >= 0) {
       // Time to take action
       if (ptr->func) {
-        ptr->func();
         // If the time for the next interval has already passed then
         // reset using the current time
         if ((long)(ptr->triggerTS - ts) < 0) {
@@ -381,6 +380,7 @@ void doTimedActions()
         } else {
           ptr->triggerTS += ptr->interval;
         }
+        ptr->func();
       }
     }
   }
