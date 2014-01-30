@@ -824,7 +824,7 @@ uint8_t XRF::sendATxSetHexNumber(const char *at, uint32_t num)
 
   status = enterCmndMode();
   if (status != XRF_OK) {
-    return false;
+    return status;
   }
 
   strcpy(buffer, at);
