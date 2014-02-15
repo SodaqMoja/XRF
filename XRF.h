@@ -1,4 +1,4 @@
-#ifndef XFR_H_
+#ifndef XRF_H_
 #define XRF_H_
 /*
  * Copyright (c) 2013-2014 Kees Bakker.  All rights reserved.
