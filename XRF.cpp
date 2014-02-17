@@ -36,7 +36,7 @@ XRF::XRF()
   _inCmndMode = false;
   _sleepPin = 0;
   _sleepPinStatus = 0xFF;
-  _sleepMode = 0;
+  _sleepMode = 0xFF;
   _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   _failedCounter = 0;
@@ -56,7 +56,7 @@ XRF::XRF(Stream &stream,
   _inCmndMode = false;
   _sleepPin = 0;
   _sleepPinStatus = 0xFF;
-  _sleepMode = 0;
+  _sleepMode = 0xFF;
   _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   _failedCounter = 0;
@@ -77,7 +77,7 @@ XRF::XRF(Stream &stream,
   _inCmndMode = false;
   _sleepPin = 0;
   _sleepPinStatus = 0xFF;
-  _sleepMode = 0;
+  _sleepMode = 0xFF;
   _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   strncpy(_devName, devName, sizeof(_devName) - 1);
@@ -109,10 +109,13 @@ void XRF::config(uint8_t dataRate, uint8_t packetSize, uint16_t packetTimeout)
 */
 void XRF::init()
 {
+  // We really must be sure it is not sleeping.
+  while (_sleepMode == 0xFF) {
+    _sleepMode = getATSM();
+    diagPrint(F("XRF::init _sleepMode ")); diagPrintLn(_sleepMode);
+  }
   // Setting panID must succeed
   while (_panID && setPanID(_panID) != XRF_OK) {
-  }
-  while (_sleepMode && _sleepPin && setSleepMode(_sleepMode, _sleepPin)) {
   }
   (void)leaveCmndMode();
 }
@@ -145,7 +148,7 @@ uint8_t XRF::sendData(const char *dest, const char *data)
     sendDataNoWait(dest, data);
 
     // Wait for an ACK
-    status = waitForAck();
+    status = waitForAck(_retryTimeout);
     if (status == XRF_OK) {
       //diagPrint(F("reply2: '")); diagPrint(reply); diagPrintLn('\'');
       break;
@@ -195,13 +198,13 @@ void XRF::sendDataNoWait(const char *dest, const char *data)
  * The syntax of the ack message (stripped <dest> and <crc>) is
  *   <source> ',' "ack"
  */
-uint8_t XRF::waitForAck()
+uint8_t XRF::waitForAck(uint16_t timeout)
 {
   uint8_t status;
   char reply[40];               // We need for the whole line. <dest> ',' <source> ',' "ack", <crc>
   const char *ptr;
 
-  status = receiveDataNoAck(NULL, 0, reply, sizeof(reply));
+  status = receiveDataNoAck(NULL, 0, reply, sizeof(reply), timeout);
   if (status == XRF_OK) {
     // The first part must be our name
     size_t len = strlen(_devName);
@@ -265,9 +268,10 @@ uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
   *ptr = '\0';
 
   //diagPrint(F("receiveMyDataNoAck prefix: '")); diagPrint(prefix); diagPrintLn('\'');
+  // FIXME The while loop has the same timeout as the readLine call. That's not right.
   uint32_t ts_max = millis() + timeout;
   while (!isTimedOut(ts_max)) {
-    if (readLine(data, dataSize)) {
+    if (readLine(data, dataSize, timeout)) {
       //diagPrint(F("receiveMyDataNoAck data'")); diagPrint(data); diagPrintLn('\'');
       size_t len = strlen(prefix);
       // Does the prefix match?
@@ -526,40 +530,115 @@ uint16_t XRF::getPacketTimeout()
 uint8_t XRF::setSleepMode(uint8_t mode, uint8_t sleepPin)
 {
   uint8_t status = XRF_NOT_IMPLEMENTED;
-  // First set the pin so that we don't go to sleep right away
+
+  diagPrint(F("XRF::setSleepMode mode ")); diagPrintLn(mode);
+  diagPrint(F("XRF::setSleepMode sleepPin ")); diagPrintLn(sleepPin);
   _sleepPin = sleepPin;
   switch (mode) {
+  case 1:
+  case 2:
+    pinMode(_sleepPin, OUTPUT);
+    break;
+  case 0:
+  default:
+    break;
+  }
+
+  // Get the current ATSM mode
+  // Side effect is that if it succeeds, it is woken up.
+  _sleepMode = getATSM();
+
+  switch (mode) {
+  case 0:
+  case 1:
+  case 2:
+    if (_sleepMode != mode) {
+      _sleepMode = mode;
+      status = sendATxSetHexNumber("ATSM", _sleepMode);
+      if (status != XRF_OK) {
+        return status;
+      }
+    } else {
+      status = XRF_OK;
+    }
+    break;
+  default:
+    _sleepMode = 0xFF;
+    break;
+  }
+
+  // Change the pin to the wake up state.
+  switch (_sleepMode) {
   case 0:
     // No-op
     break;
   case 1:
     // Set pin HIGH to not sleep
-    pinMode(_sleepPin, OUTPUT);
     digitalWrite(_sleepPin, HIGH);
     _sleepPinStatus = HIGH;
     break;
   case 2:
     // Set pin LOW to not sleep
-    pinMode(_sleepPin, OUTPUT);
     digitalWrite(_sleepPin, LOW);
     _sleepPinStatus = LOW;
     break;
   default:
     break;
   }
-
-  switch (mode) {
-  case 0:
-  case 1:
-  case 2:
-    _sleepMode = mode;
-    status = sendATxSetHexNumber("ATSM", _sleepMode);
-    break;
-  default:
-    _sleepMode = 0;
-    break;
-  }
   return status;
+}
+
+/*
+ * Get the current ATSM
+ *
+ * The difficulty is that we don't know in which mode
+ * the XRF currently is. If it is already mode 1 or 2
+ * then we simply have to try the sleep pin on and off
+ * to make it wake up.
+ */
+uint8_t XRF::getATSM()
+{
+  uint8_t mode;
+  /*
+   */
+  // Assume it is in mode 0, it should respond right away
+  diagPrint(F("XRF::setSleepMode _sleepPin ")); diagPrintLn(_sleepPin);
+  mode = _getATSM();
+  diagPrint(F("XRF::getATSM mode0 ")); diagPrintLn(mode);
+  if (mode == 0xFF) {
+    // We now must have a pin. If not, we can't do anything else
+    if (_sleepPin) {
+      // Assume it is in mode 1. Set the pin to wake up mode 1.
+      digitalWrite(_sleepPin, HIGH);
+      _sleepPinStatus = HIGH;
+      mode = _getATSM();
+      diagPrint(F("XRF::getATSM mode1 ")); diagPrintLn(mode);
+      if (mode == 0xFF) {
+        // Assume it is in mode 2. Set the pin to wake up mode 2.
+        digitalWrite(_sleepPin, LOW);
+        _sleepPinStatus = LOW;
+        mode = _getATSM();
+        diagPrint(F("XRF::getATSM mode2 ")); diagPrintLn(mode);
+        if (mode == 0xFF) {
+          // We're out of suggestions. Perhaps the caller can retry.
+          return 0xFF;
+        }
+      }
+    }
+  }
+  return mode;
+}
+
+/*
+ * Get the current ATSM
+ */
+uint8_t XRF::_getATSM()
+{
+  uint32_t val;
+  if (!sendATxGetHexNumber("ATSM", &val)) {
+    return 0xff;
+  }
+  return val;
 }
 
 void XRF::sleep()
@@ -657,11 +736,14 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
     if (seenCR) {
       c = _myStream->peek();
       // ts_waitLF is guaranteed to be non-zero
-      if ((c != -1 && c != '\n') || isTimedOut(ts_waitLF)) {
+      if ((c == -1 && isTimedOut(ts_waitLF)) || c != '\n') {
+        //diagPrint(F("readLine:  peek '")); diagPrint(c); diagPrintLn('\'');
         // Line ended with just <CR>. That's OK too.
         goto ok;
       }
+      // Only \n should fall through
     }
+
     c = _myStream->read();
     if (c < 0) {
       continue;

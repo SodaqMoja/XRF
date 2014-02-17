@@ -15,12 +15,20 @@
 extern SoftwareSerial diagport;
 #define DIAGPRINT(...)          diagport.print(__VA_ARGS__)
 #define DIAGPRINTLN(...)        diagport.println(__VA_ARGS__)
-void dumpBuffer(uint8_t * buf, size_t size);
+void dumpBuffer(const uint8_t * buf, size_t size);
+void memoryDump();
+void showAddress(const char *txt, void * addr);
+void showFreeRAM();
+void showBattVolt(float value);
 
 #else
 #define DIAGPRINT(...)
 #define DIAGPRINTLN(...)
 #define dumpBuffer(buf, size)
+#define memoryDump()
+#define showAddress(txt, addr)
+#define showFreeRAM()
+#define showBattVolt(value)
 #endif
 
 

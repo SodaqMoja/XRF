@@ -19,6 +19,7 @@
 // Our own libraries
 #include "Diag.h"
 #include "Utils.h"
+#include "pindefs.h"
 
 #define ADC_AREF                3.3     // DEFAULT see wiring_analog.c
 
@@ -27,31 +28,6 @@
 #define XRF_PANID               0x5AA5 // 0x1405
 #define XRF_MASTER_NAME         "M"
 
-#define DF_MOSI         11
-#define DF_MISO         12
-#define DF_SPICLOCK     13
-#define DF_SLAVESELECT  10
-
-#define BATVOLTPIN      A7
-#define BATVOLT_R1      10              // in fact 10M
-#define BATVOLT_R2      2               // in fact 2M
-
-// The Xbee DTR is connected to the XRF sleep pin
-#define XBEEDTR_PIN     7
-
-#define GROVEPWR_PIN    6
-#define GROVEPWR_OFF    LOW
-#define GROVEPWR_ON     HIGH
-
-// Only needed if DIAG is enabled
-#define DIAGPORT_RX     4
-#define DIAGPORT_TX     5
-
-//#########       diag      #############
-#ifdef ENABLE_DIAG
-#include <SoftwareSerial.h>
-SoftwareSerial diagport(DIAGPORT_RX, DIAGPORT_TX);
-#endif
 
 //#########       variables      #############
 
@@ -75,7 +51,7 @@ struct DataRecord_t
 };
 typedef struct DataRecord_t DataRecord_t;
 
-XRF xrf(Serial);
+XRF xrf(Serial, XRF_PANID, 10, 500);
 char slaveName[DEV_NAME_LEN];     // This must hold 'S' plus a 8 hexdigit number and a \0
 
 DataRecord_t dataRecord;
@@ -135,7 +111,7 @@ void setup()
 #ifdef ENABLE_DIAG
   diagport.begin(9600);
 #endif
-  DIAGPRINTLN("GMS slave");
+  DIAGPRINTLN("XRF slave");
 
   Wire.begin();
   rtc.begin();
@@ -145,10 +121,16 @@ void setup()
   strcpy(dataRecord.devName, slaveName);
 
   Serial.begin(9600);
-  xrf.init(slaveName);
 #ifdef ENABLE_DIAG
   xrf.setDiag(diagport);
 #endif
+  // Sleep mode is important. We must set it before anything else.
+  // We want this to succeed
+  while (xrf.setSleepMode(2, XBEEDTR_PIN) != XRF_OK) {
+    delay(1000);
+  }
+  xrf.init(slaveName);
+  xrf.leaveCmndMode();
   delay(100);
   DIAGPRINTLN("XRF slave");
 
