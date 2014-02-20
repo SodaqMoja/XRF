@@ -82,8 +82,12 @@ public:
   uint16_t getPacketTimeout();
 
   uint8_t setSleepMode(uint8_t mode, uint8_t sleepPin);
+  uint8_t getSleepMode() { return _getATSM(); }
   void sleep();
   void wakeUp();
+
+  uint8_t doApplyChanges();
+  uint8_t doATAC() { return doApplyChanges(); }
 
   void flushInput();
 

@@ -371,6 +371,21 @@ uint16_t XRF::getPanID()
 }
 
 /*
+ * Apply Changes, send the ATAC command
+ *
+ * For the documentation for the ATAC command:
+ *  "Returns OK and then applies changes to baud rate, flowcontrol,
+ *   radio data rate and radio freq. NOTE: that if you have changed
+ *   the baud rate then after the OK message you will need to change
+ *   the baudrate at the other end. This does NOT save the configuration
+ *   (use ATWR for that)."
+ */
+uint8_t XRF::doApplyChanges()
+{
+  return sendCommandWaitForOK("ATAC");
+}
+
+/*
 * Set the baud rate
 *
 * This function sets the baud rate of the uart and also the XRF.
