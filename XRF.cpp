@@ -150,7 +150,6 @@ uint8_t XRF::sendData(const char *dest, const char *data)
     // Wait for an ACK
     status = waitForAck(_retryTimeout);
     if (status == XRF_OK) {
-      //diagPrint(F("reply2: '")); diagPrint(reply); diagPrintLn('\'');
       break;
     }
     if (status == XRF_NACK) {
@@ -158,6 +157,7 @@ uint8_t XRF::sendData(const char *dest, const char *data)
     }
     status = XRF_MAXRETRY;
   }
+  //diagPrint(F(" status ")); diagPrintLn(status);
 
   return status;
 }
@@ -267,12 +267,12 @@ uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
   *ptr++ = _fldSep;
   *ptr = '\0';
 
-  //diagPrint(F("receiveMyDataNoAck prefix: '")); diagPrint(prefix); diagPrintLn('\'');
+  //diagPrint(F("receiveDataNoAck prefix: '")); diagPrint(prefix); diagPrintLn('\'');
   // FIXME The while loop has the same timeout as the readLine call. That's not right.
   uint32_t ts_max = millis() + timeout;
   while (!isTimedOut(ts_max)) {
     if (readLine(data, dataSize, timeout)) {
-      //diagPrint(F("receiveMyDataNoAck data'")); diagPrint(data); diagPrintLn('\'');
+      //diagPrint(F("receiveDataNoAck data'")); diagPrint(data); diagPrintLn('\'');
       size_t len = strlen(prefix);
       // Does the prefix match?
       if (strncmp(data, prefix, len) == 0) {
@@ -284,19 +284,19 @@ uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
           // Strip the checksum
           *cptr = '\0';
           uint16_t crc1 = crc16_xmodem((uint8_t *)data, strlen(data));
-          //diagPrint(F("receiveMyDataNoAck: '")); diagPrint(data); diagPrintLn('\'');
-          //diagPrint(F("receiveMyDataNoAck checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
+          //diagPrint(F("receiveDataNoAck: '")); diagPrint(data); diagPrintLn('\'');
+          //diagPrint(F("receiveDataNoAck checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
           if (crc1 == crc) {
             _failedCounter = 0;
             // Strip the prefix from the reply
             strcpy(data, data + len);
-            //diagPrint(F("receiveMyDataNoAck: 2 '")); diagPrint(data); diagPrintLn('\'');
+            //diagPrint(F("receiveDataNoAck: 2 '")); diagPrint(data); diagPrintLn('\'');
 
             // The first field is the sender address
             cptr = strchr(data, _fldSep);
             if (cptr != NULL) {
               *cptr = '\0';
-              //diagPrint(F("receiveMyDataNoAck: 3 '")); diagPrint(data); diagPrintLn('\'');
+              //diagPrint(F("receiveDataNoAck: 3 '")); diagPrint(data); diagPrintLn('\'');
               if (source) {
                 strncpy(source, data, sourceSize - 1);
               }
@@ -697,8 +697,8 @@ void XRF::wakeUp()
 void XRF::setSleepPin(uint8_t newStatus, bool isSleep)
 {
   if (newStatus != 0xFF && _sleepPinStatus != newStatus) {
-    diagPrint(isSleep ? F("go to sleep") : F("wake up"));
-    diagPrint(F(", pin setting ")); diagPrintLn(newStatus == LOW ? F("LOW") : F("HIGH"));
+    //diagPrint(isSleep ? F("go to sleep") : F("wake up"));
+    //diagPrint(F(", pin setting ")); diagPrintLn(newStatus == LOW ? F("LOW") : F("HIGH"));
     if (isSleep) {
       // Allow a bit of time to write whatever is in the output buffer
       delay(_sleepDelay);
