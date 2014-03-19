@@ -59,6 +59,8 @@ public:
   void init();
   void init(const char *devName);
   void setFldSep(char fldSep) { _fldSep = fldSep; }
+  void setNrRetries(uint8_t nr) { _nrRetries = nr; }
+  void setRetryTimeout(uint16_t t) { _retryTimeout = t; }
 
   uint8_t leaveCmndMode();
 
@@ -92,7 +94,7 @@ public:
   void flushInput();
 
   uint8_t sendData(const char *dest, const char *data);
-  uint8_t receiveData(char *source, size_t sourceSize, char *data, size_t dataSize, uint16_t timeout=3000);
+  uint8_t receiveData(char *source, size_t sourceSize, char *data, size_t dataSize, uint16_t timeout=500);
   int available() { return _myStream->available(); }
 
   uint8_t sendDataAndWaitForReply(const char *dest, const char *data, char *reply, size_t replySize);
