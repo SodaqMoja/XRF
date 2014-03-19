@@ -91,6 +91,7 @@ void XRF::config(uint8_t dataRate, uint8_t packetSize, uint16_t packetTimeout)
 {
   if (dataRate) {
     setDataRate(dataRate);
+    doApplyChanges();
   }
   if (packetSize) {
     setPacketSize(packetSize);
