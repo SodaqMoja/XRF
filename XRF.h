@@ -107,7 +107,7 @@ private:
   void sendDataNoWait(const char *dest, const char *data);
   uint8_t receiveDataNoAck(char *source, size_t sourceSize, char *data, size_t dataSize, uint16_t timeout=3000);
   uint8_t waitForReply(char *reply, size_t replySize);
-  uint8_t waitForAck(uint16_t timeout=1000);
+  uint8_t waitForAck(const char *from, uint16_t timeout=1000);
 
   uint8_t getATSM();
   uint8_t _getATSM();

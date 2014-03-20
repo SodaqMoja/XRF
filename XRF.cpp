@@ -149,7 +149,7 @@ uint8_t XRF::sendData(const char *dest, const char *data)
     sendDataNoWait(dest, data);
 
     // Wait for an ACK
-    status = waitForAck(_retryTimeout);
+    status = waitForAck(dest, _retryTimeout);
     if (status == XRF_OK) {
       break;
     }
@@ -196,29 +196,27 @@ void XRF::sendDataNoWait(const char *dest, const char *data)
 /*
  * Wait for an "ack"
  *
- * The syntax of the ack message (stripped <dest> and <crc>) is
+ * The syntax of the ack message (after having stripped <dest> and <crc>) is:
  *   <source> ',' "ack"
+ * We must check that the ack is indeed from the expected source.
  */
-uint8_t XRF::waitForAck(uint16_t timeout)
+uint8_t XRF::waitForAck(const char *from, uint16_t timeout)
 {
   uint8_t status;
   char reply[40];               // We need for the whole line. <dest> ',' <source> ',' "ack", <crc>
-  const char *ptr;
+  char source2[12];
 
-  status = receiveDataNoAck(NULL, 0, reply, sizeof(reply), timeout);
+  status = receiveDataNoAck(source2, sizeof(source2), reply, sizeof(reply), timeout);
   if (status == XRF_OK) {
-    // The first part must be our name
-    size_t len = strlen(_devName);
-    if (strncmp(reply, _devName, len) == 0) {
-      ptr = reply + len;
-      if (*ptr == _fldSep) {
-        ++ptr;
-      }
-      if (strncmp(ptr, "ack", 3) == 0) {
-        return XRF_OK;
-      }
-      if (strncmp(ptr, "nack", 4) == 0) {
-        return XRF_NACK;
+    status = XRF_NOT_OK;
+    if (strcmp(source2, from) != 0) {
+    } else {
+      if (strcmp(reply, "ack") == 0) {
+        status = XRF_OK;
+      } else if (strcmp(reply, "nack") == 0) {
+        status = XRF_NACK;
+      } else {
+        // Unknown
       }
     }
   }
@@ -248,6 +246,8 @@ uint8_t XRF::receiveData(char *source, size_t sourceSize,
 /*
  * Wait for a line of text that starts with the prefix
  *
+ * \param source a pointer to store the name of the source
+ * \param sourceSize the maximum number of bytes to store in the source (including \0)
  * \param data a pointer to store the result
  * \param dataSize the maximum number of bytes to store in the result buffer (including \0)
  * \param timeout the maximum number of milliseconds for the whole operation
@@ -260,8 +260,8 @@ uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
   char prefix[16];              // _devName plus comma plus \0
   char *ptr;
 
-  // Prepare the prefix
-  //   <device name> <field sep>
+  // Prepare the "prefix". The packet must start with this.
+  // We use our own address, our own name.
   ptr = prefix;
   strcpy(ptr, _devName);
   ptr += strlen(ptr);
@@ -278,33 +278,42 @@ uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
       // Does the prefix match?
       if (strncmp(data, prefix, len) == 0) {
         // Yes, it does.
+
+        // Next, verify the checksum
         uint16_t crc;
         char *cptr;
         if (findCrc(data, &crc, &cptr)) {
           //diagPrint(F("receiveData crc: ")); diagPrintLn(crc);
+
           // Strip the checksum
           *cptr = '\0';
           uint16_t crc1 = crc16_xmodem((uint8_t *)data, strlen(data));
           //diagPrint(F("receiveDataNoAck: '")); diagPrint(data); diagPrintLn('\'');
           //diagPrint(F("receiveDataNoAck checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
           if (crc1 == crc) {
+            // Yes, the checksum is correct.
             _failedCounter = 0;
+
             // Strip the prefix from the reply
             strcpy(data, data + len);
             //diagPrint(F("receiveDataNoAck: 2 '")); diagPrint(data); diagPrintLn('\'');
 
-            // The first field is the sender address
+            // Now, the first field is the sender address
             cptr = strchr(data, _fldSep);
             if (cptr != NULL) {
+              // We found a source address
               *cptr = '\0';
               //diagPrint(F("receiveDataNoAck: 3 '")); diagPrint(data); diagPrintLn('\'');
               if (source) {
+                // Store the source
                 strncpy(source, data, sourceSize - 1);
               }
-              // Strip the source address
+              // Next, strip the source address, so that only the data remains.
               strcpy(data, cptr + 1);
               return XRF_OK;
             }
+            // Hmm. We get here when the packet only has destination and source, but no data.
+            // Weird. Let's treat it as if it was a checksum error.
           }
           status = XRF_CRC_ERROR;
         }
