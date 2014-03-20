@@ -77,7 +77,7 @@ DataRecord_t dataRecords[MAX_NR_SLAVES + 1];    // One extra for the master
 size_t nrSlaves;
 
 // Use a generic name "M" so that it can be preconfigured in the slaves
-XRF xrf(Serial, XRF_MASTER_NAME, XRF_PANID);
+XRF xrf(Serial, XRF_PANID, XRF_MASTER_NAME);
 // TODO make this point to dataRecords[0].devName to save space
 char masterName[DEV_NAME_LEN];    // This must hold 'M' plus a 8 hexdigit number and a \0
 
@@ -165,10 +165,15 @@ void setup()
   nrSlaves = 1;
 
   Serial.begin(9600);
-  xrf.init();
 #ifdef ENABLE_DIAG
   xrf.setDiag(diagport);
 #endif
+  // Sleep mode is important. We must set it before anything else.
+  // We want this to succeed
+  while (xrf.setSleepMode(2, XBEEDTR_PIN) != XRF_OK) {
+    delay(1000);
+  }
+  xrf.init();
 
   Serial.print("XRF master "); Serial.println(masterName);
 
