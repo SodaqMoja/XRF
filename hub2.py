@@ -188,6 +188,9 @@ def mainLoop(args, hub):
     except:
         raise
 
+def getNow():
+    return int(time.time())
+
 def main():
     parser = argparse.ArgumentParser(description='Listen to XRF for data from weather station')
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
@@ -201,6 +204,7 @@ def main():
 
     # Create and initialize the XRF device
     hub = xrf.XRF(args.ttyport)
+    hub.getNow = getNow
     #while hub.setDataRate(2) != xrf.XRF.XRF_OK:
     #    pass
     #hub.doApplyChanges()

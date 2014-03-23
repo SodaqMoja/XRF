@@ -29,7 +29,9 @@ class XRF(serial.Serial):
     def __init__(self, *args, **kwargs):
         # timeout=0 - non blocking mode
         # timeout=0.01 - timeout after 10 milliseconds
-        super(XRF, self).__init__(*args, timeout=0.01, **kwargs)
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = 0.01
+        super(XRF, self).__init__(*args, **kwargs)
         self._panID = 0
         self._nrRetries = 3
         self._retryTimeout = 500
@@ -38,6 +40,7 @@ class XRF(serial.Serial):
         self._inCmndMode = False
         self._sleepMode = None
         self._peekChar = None
+        self._getNow = None
         self.flushInput()
 
     def init(self, name, panID):
@@ -47,6 +50,13 @@ class XRF(serial.Serial):
             # Wait a longer while and hope for the best when retrying
             self._delay(5000)
         self._leaveCmndMode()
+
+    @property
+    def getNow(self):
+        return self._getNow
+    @getNow.setter
+    def getNow(self, func):
+        self._getNow = func
 
     def sendData(self, dest, data):
         '''
@@ -109,7 +119,7 @@ class XRF(serial.Serial):
         status, source, data = self._receiveDataNoAck(self._devName, timeout)
         if status == self.XRF_OK:
             # Send an ACK
-            self._sendDataNoWait(source, "ack")
+            self._sendAck(source)
         return status, source, data
 
     def _receiveDataNoAck(self, expectDest, timeout):
@@ -142,7 +152,11 @@ class XRF(serial.Serial):
             line, crc = self._findCrc(line)
             if crc is None:
                 continue
-            crc = int(crc)
+            try:
+                crc = int(crc)
+            except ValueError:
+                self._diagPrintLn("_receiveDataNoAck: line=%(line)s crc='%(crc)s'" % vars())
+                continue
             crc1 = self.get_crc16_xmodem(line)
             if crc == crc1:
                 # Yes
@@ -158,6 +172,13 @@ class XRF(serial.Serial):
             #self._diagPrintLn("_receiveDataNoAck: crc=%(crc)d != crc1=%(crc1)d" % vars())
 
         return self.XRF_TIMEOUT, None, None
+
+    def _sendAck(self, dest):
+        if self._getNow is not None:
+            ts = self._getNow()
+            self._sendDataNoWait(dest, self._fldSep.join([str(ts), "ack"]))
+        else:
+            self._sendDataNoWait(dest, "ack")
 
     def sendDataAndWaitForReply(self, dest, data):
         '''
@@ -558,6 +579,7 @@ class XRF(serial.Serial):
         crc = 0xffff
         for b in message:
             # Do the crc_ccitt_update for each byte
+            b = ord(b)
             b ^= crc & 0xff
             b ^= b << 4
             b = b & 0xff
@@ -573,7 +595,7 @@ class XRF(serial.Serial):
 
     def _timedOut(self, tsMax):
         millis = self._millis()
-        return self._millis() - tsMax >= 0
+        return millis - tsMax >= 0
 
     def _diagPrintLn(self, txt):
         self._diagPrint(txt + '\n')
