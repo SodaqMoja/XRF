@@ -1,0 +1,84 @@
+When two (or more) SODAQ devices communicate with eachother and
+at the same time these SODAQ devices are in sleep mode most of
+the time, it is vital that their RTC clocks are in synch.
+
+To help application programmers the XRF library can send a timestamp
+in the ACK packets. It's optional to have a timestamp in the ACK packet.
+
+
+Perhaps it is easier to explain its usage with an example. There are
+two SODAQ devices with a XRFbee. One is called the "master" and one
+is called the "slave". The slave must send its data to the master.
+Each time the data packet is received by the master, the master will
+include a timestamp in the ACK packet. If you monitor the "airwaves"
+you may see something like this:
+
+  M,S97b152c1,data,533937623135326331004f522f534a2985400000b241,34874
+  S97b152c1,M,1395610191,ack,16896
+
+The first line is the data from the slave to the master. (The slave has
+the name "S97b152c1" and the master has the name "M".)
+
+The second line shows the ACK packet and it has a timestamp in it, the
+number 1395610191.
+
+
+There are two callback functions in the XRF library. One is to be able to
+add a timestamp to an outgoing ACK packet. This is the "getNow" function
+and for that there is a XRF::setGetNowFunc() installer. The other callback
+function is to instruct the XRF library what to do if an incoming ACK packet
+has a timestamp. This is the "setNow" function and for that there is a
+XRF::setSetNowFunc installer.
+
+In our example we only want the master to include the timestamp in the ACK
+packet. And the slave must do something with the timestamp of incoming ACK
+packets.
+
+
+How would the master setup code look like?
+
+/*
+ * Simple helper function to get the current timestamp from RTC
+ */
+uint32_t getNow()
+{
+  return rtc.now().getEpoch();
+}
+
+XRF xrf(/* ... */);
+void setup()
+{
+  // ...
+  xrf.setGetNowFunc(getNow);
+  // ...
+
+The setGetNowFunc is setting a callback function. It is needed by the XRF library
+to be able to add a timestamp in the ack packet.
+
+
+How would the slave setup code look like?
+
+/*
+ * Update the RTC with the new value
+ *
+ * If the change is less than a certain minimum then
+ * the RTC will not be updated
+ */
+void setRtc(uint32_t newTs)
+{
+  uint32_t oldTs = rtc.now().getEpoch();
+  int32_t diffTs = abs(newTs - oldTs);
+  // Only update the RTC if it differs more than N seconds
+  if (diffTs >= 2) {
+    // Update the RTC
+    rtc.setEpoch(newTs);
+    // Perhaps do something more because the RTC was updated.
+  }
+}
+
+XRF xrf(/* ... */);
+void setup()
+{
+  // ...
+  xrf.setSetNowFunc(setRtc);
+  // ...

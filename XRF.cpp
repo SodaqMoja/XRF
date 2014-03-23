@@ -40,6 +40,8 @@ XRF::XRF()
   _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   _failedCounter = 0;
+  _setNow = 0;
+  _getNow = 0;
 }
 
 XRF::XRF(Stream &stream,
@@ -60,6 +62,8 @@ XRF::XRF(Stream &stream,
   _sleepDelay = 1000;
   memset(_devName, 0, sizeof(_devName));
   _failedCounter = 0;
+  _setNow = 0;
+  _getNow = 0;
 }
 
 XRF::XRF(Stream &stream,
@@ -82,6 +86,8 @@ XRF::XRF(Stream &stream,
   memset(_devName, 0, sizeof(_devName));
   strncpy(_devName, devName, sizeof(_devName) - 1);
   _failedCounter = 0;
+  _setNow = 0;
+  _getNow = 0;
 }
 
 /*
@@ -199,24 +205,48 @@ void XRF::sendDataNoWait(const char *dest, const char *data)
  * The syntax of the ack message (after having stripped <dest> and <crc>) is:
  *   <source> ',' "ack"
  * We must check that the ack is indeed from the expected source.
+ *
+ * In our embedded environment we have to worry about stack space. In this
+ * function we create an area on stack that is used to receive the whole
+ * line with the "ack". It must be big enough to hold everything on the line:
+ *   <dest> ',' <source> ',' <ts> ',' "ack" ',' <crc>
+ * (Should we have <ts> to be optional?)
  */
 uint8_t XRF::waitForAck(const char *from, uint16_t timeout)
 {
   uint8_t status;
-  char reply[40];               // We need for the whole line. <dest> ',' <source> ',' "ack", <crc>
+  char reply[40];               // We need space for the WHOLE line (receiveDataNoAck uses it too)
   char source2[12];
+  char *cptr;
 
   status = receiveDataNoAck(source2, sizeof(source2), reply, sizeof(reply), timeout);
   if (status == XRF_OK) {
-    status = XRF_NOT_OK;
+    // The "reply" buffer contains <ts> ',' "ack", or maybe
+    // just "ack"
+    status = XRF_NOT_OK;                // Assume the worst
     if (strcmp(source2, from) != 0) {
     } else {
-      if (strcmp(reply, "ack") == 0) {
+      // Do we have two fields?
+      cptr = strchr(reply, _fldSep);
+      if (cptr) {
+        // First field is assumed to be a timestamp
+        *cptr = '\0';          // terminate that string
+        if (_setNow) {
+          uint32_t ts;
+          if (getUValue(reply, &ts)) {
+            _setNow(ts);
+          }
+        }
+        ++cptr;                 // Skip the comma
+      } else {
+        cptr = reply;
+      }
+      if (strcmp(cptr, "ack") == 0) {
         status = XRF_OK;
-      } else if (strcmp(reply, "nack") == 0) {
+      } else if (strcmp(cptr, "nack") == 0) {
         status = XRF_NACK;
       } else {
-        // Unknown
+        // Unknown ack packet
       }
     }
   }
@@ -235,8 +265,9 @@ uint8_t XRF::receiveData(char *source, size_t sourceSize,
   status = receiveDataNoAck(source2, sizeof(source2), data, dataSize, timeout);
   if (status == XRF_OK) {
     // Send an ack
-    sendDataNoWait(source2, "ack");
+    sendAck(source2);
     if (source) {
+      // Return the name of the source of the packet.
       strncpy(source, source2, sourceSize - 1);
     }
   }
@@ -323,6 +354,30 @@ uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
   }
   ++_failedCounter;
   return status;
+}
+
+/*
+ * Send an Ack to a device (from which we just got a valid packet)
+ *
+ * The syntax of the whole ACK line is as follows:
+ *   <dest> ',' <source> ',' [ <ts> ',' ] "ack" ',' <crc>
+ * The timestamp is optional. If the callback getNow holds a valid
+ * function pointer we use that to get the current timestamp.
+ */
+void XRF::sendAck(const char *dest)
+{
+  if (_getNow) {
+    uint32_t ts = (*_getNow)();
+    // Assemble a packet with <ts> ',' "ack"
+    String str;
+    str += ts;
+    str += _fldSep;
+    str += "ack";
+    sendDataNoWait(dest, str.c_str());
+  } else {
+    // An Ack without a timestamp
+    sendDataNoWait(dest, "ack");
+  }
 }
 
 /*
@@ -881,7 +936,6 @@ bool XRF::sendATxGetHexNumber(const char *at, uint32_t *num)
 {
   uint8_t status;
   char buffer[10];
-  char *eptr;
 
   status = enterCmndMode();
   if (status != XRF_OK) {
@@ -902,8 +956,8 @@ bool XRF::sendATxGetHexNumber(const char *at, uint32_t *num)
     diagPrint(F("sendATxGetHexNumber, missing OK ")); diagPrintLn(status);
     return false;
   }
-  uint32_t val = strtoul(buffer, &eptr, 16);
-  if (eptr == buffer) {
+  uint32_t val;
+  if (!getUValue(buffer, &val, 16)) {
     // Invalid hex number
     diagPrintLn(F("sendATxGetHexNumber: invalid number"));
     return false;
@@ -966,9 +1020,9 @@ bool XRF::findCrc(char *txt, uint16_t *crc, char **cptr)
   while (ptr > txt) {
     *cptr = ptr - 1;
     if (**cptr == _fldSep) {
-      char *eptr;
-      *crc = strtoul(ptr, &eptr, 0);
-      if (eptr != ptr) {
+      uint32_t val;
+      if (getUValue(ptr, &val)) {
+        *crc = val;
         return true;
       }
       break;
@@ -1001,4 +1055,14 @@ uint16_t XRF::crc16_xmodem(uint8_t * buf, size_t len)
         crc = _crc_xmodem_update(crc, *buf++);
     }
     return crc;
+}
+
+bool XRF::getUValue(const char *buffer, uint32_t * value, int base)
+{
+  char *eptr;
+  *value = strtoul(buffer, &eptr, base);
+  if (eptr != buffer) {
+    return true;
+  }
+  return false;
 }

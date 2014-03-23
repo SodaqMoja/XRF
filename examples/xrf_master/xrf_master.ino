@@ -120,6 +120,7 @@ float getRealBatteryVoltage();
 
 void doRtcUpdate();
 void setRtc(uint32_t newTs);
+uint32_t getNow();
 void rtcChangedActions(uint32_t ts);
 
 void readCommand();
@@ -165,6 +166,7 @@ void setup()
   nrSlaves = 1;
 
   Serial.begin(9600);
+  xrf.setGetNowFunc(getNow);
 #ifdef ENABLE_DIAG
   xrf.setDiag(diagport);
 #endif
@@ -173,6 +175,7 @@ void setup()
   while (xrf.setSleepMode(2, XBEEDTR_PIN) != XRF_OK) {
     delay(1000);
   }
+  xrf.config(1);                // This sets DataRate to 1 (default)
   xrf.init();
 
   Serial.print("XRF master "); Serial.println(masterName);
@@ -463,6 +466,14 @@ void setRtc(uint32_t newTs)
     rtc.setEpoch(newTs);
     rtcChangedActions(newTs);
   }
+}
+
+/*
+ * Simple helper function to get the current timestamp from RTC
+ */
+uint32_t getNow()
+{
+  return rtc.now().getEpoch();
 }
 
 /*

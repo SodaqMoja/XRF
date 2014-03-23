@@ -88,6 +88,9 @@ public:
   void sleep();
   void wakeUp();
 
+  void setSetNowFunc(void (*func)(uint32_t ts)) { _setNow = func; }
+  void setGetNowFunc(uint32_t (*func)()) { _getNow = func; }
+
   uint8_t doApplyChanges();
   uint8_t doATAC() { return doApplyChanges(); }
 
@@ -108,6 +111,7 @@ private:
   uint8_t receiveDataNoAck(char *source, size_t sourceSize, char *data, size_t dataSize, uint16_t timeout=3000);
   uint8_t waitForReply(char *reply, size_t replySize);
   uint8_t waitForAck(const char *from, uint16_t timeout=1000);
+  void sendAck(const char *dest);
 
   uint8_t getATSM();
   uint8_t _getATSM();
@@ -128,6 +132,7 @@ private:
   bool findCrc(char *txt, uint16_t *crc, char **cptr);
   uint16_t crc16_ccitt(uint8_t * buf, size_t len);
   uint16_t crc16_xmodem(uint8_t * buf, size_t len);
+  bool getUValue(const char *buffer, uint32_t * value, int base=0);
 
   // TODO There must be an easier way to do this.
 #if XRF_ENABLE_DIAG
@@ -169,6 +174,8 @@ private:
   uint16_t _sleepDelay;
   char _devName[10];
   size_t _failedCounter;
+  void (*_setNow)(uint32_t ts);
+  uint32_t (*_getNow)();
 };
 
 #endif  /* XRF_H_ */

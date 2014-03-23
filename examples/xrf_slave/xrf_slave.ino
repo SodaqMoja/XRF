@@ -121,6 +121,7 @@ void setup()
   strcpy(dataRecord.devName, slaveName);
 
   Serial.begin(9600);
+  xrf.setSetNowFunc(setRtc);
 #ifdef ENABLE_DIAG
   xrf.setDiag(diagport);
 #endif
@@ -129,9 +130,9 @@ void setup()
   while (xrf.setSleepMode(2, XBEEDTR_PIN) != XRF_OK) {
     delay(1000);
   }
+  xrf.config(1);                // This sets DataRate to 1 (default)
   xrf.init(slaveName);
-  xrf.leaveCmndMode();
-  delay(100);
+
   DIAGPRINTLN("XRF slave");
 
   Serial.print("XRF slave "); Serial.println(slaveName);
@@ -494,6 +495,7 @@ void redoHello()
  */
 void setRtc(uint32_t newTs)
 {
+  DIAGPRINT("setRtc: "); DIAGPRINTLN(newTs);
   uint32_t oldTs = rtc.now().getEpoch();
   int32_t diffTs = abs(newTs - oldTs);
   // Only update the RTC if it differs more than N seconds
