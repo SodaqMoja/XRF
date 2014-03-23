@@ -543,13 +543,25 @@ class XRF(serial.Serial):
         return reg
 
     def get_crc16_ccitt(self, message):
-        'This is the algorithm as described in avr-libc util/crc16.h for _crc_ccitt_update()'
+        '''
+        This is the algorithm as described in avr-libc util/crc16.h for _crc_ccitt_update()
+        uint16_t
+        crc_ccitt_update (uint16_t crc, uint8_t data)
+        {
+            data ^= lo8 (crc);
+            data ^= data << 4;
+
+            return ((((uint16_t)data << 8) | hi8 (crc)) ^ (uint8_t)(data >> 4) 
+                    ^ ((uint16_t)data << 3));
+        }
+        '''
         crc = 0xffff
         for b in message:
+            # Do the crc_ccitt_update for each byte
             b ^= crc & 0xff
             b ^= b << 4
             b = b & 0xff
-            crc = ((b << 8) | (crc >> 8)) ^ (data >> 4) ^ (data << 3)
+            crc = ((b << 8) | (crc >> 8)) ^ (b >> 4) ^ (b << 3)
             crc &= 0xffff
         return crc
 
