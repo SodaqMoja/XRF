@@ -17,15 +17,31 @@ const int panId = 0x5AA5;
 // This is the name that we listen to when using xrf.receiveMyData
 const char *myName = "dev2";
 
-XRF xrf(Serial, myName, panId);
+XRF xrf(Serial, panId, myName);
+
+uint32_t getNow();
 
 void setup()
 {
   Wire.begin();
   rtc.begin();
 
+  // Install the callback function that will instruct the XRf library
+  // to send our RTC in the ACK packets
+  xrf.setGetNowFunc(getNow);
+
   Serial.begin(9600);
+  // We want this to succeed
+  while (xrf.setSleepMode(1, XBEEDTR_PIN) != XRF_OK) {
+  }
+  // DataRate 2 is 38.4k.
+  // DataRate 4 is 100k.
+  // DataRate 5 is 50k.
+  while (xrf.setDataRate(2) != XRF_OK) {
+  }
+  xrf.doApplyChanges();
   xrf.init();
+  xrf.leaveCmndMode();
 }
 
 float temp;
@@ -51,4 +67,9 @@ void loop()
   if (xrf.receiveData(source, sizeof(source), buffer, sizeof(buffer)) == XRF_OK) {
     processData(buffer);
   }
+}
+
+uint32_t getNow()
+{
+  return rtc.now().getEpoch();
 }
