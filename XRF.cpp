@@ -816,7 +816,7 @@ bool XRF::readLine(char *buffer, size_t size, uint16_t timeout)
     if (seenCR) {
       c = _myStream->peek();
       // ts_waitLF is guaranteed to be non-zero
-      if ((c == -1 && isTimedOut(ts_waitLF)) || c != '\n') {
+      if ((c == -1 && isTimedOut(ts_waitLF)) || (c != -1 && c != '\n')) {
         //diagPrint(F("readLine:  peek '")); diagPrint(c); diagPrintLn('\'');
         // Line ended with just <CR>. That's OK too.
         goto ok;
