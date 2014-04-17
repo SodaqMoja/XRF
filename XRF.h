@@ -26,7 +26,7 @@
 /*
  * Make this an undef (or comment) to disable diagnostic
  */
-#define XRF_ENABLE_DIAG 1
+#define ENABLE_XRF_DIAG 1
 
 enum {
   XRF_OK = 0,
@@ -133,31 +133,6 @@ private:
   uint16_t crc16_ccitt(uint8_t * buf, size_t len);
   uint16_t crc16_xmodem(uint8_t * buf, size_t len);
   bool getUValue(const char *buffer, uint32_t * value, int base=0);
-
-  // TODO There must be an easier way to do this.
-#if XRF_ENABLE_DIAG
-  void diagPrint(const char *str) { if (_diagStream) _diagStream->print(str); }
-  void diagPrintLn(const char *str) { if (_diagStream) _diagStream->println(str); }
-  void diagPrint(const __FlashStringHelper *str) { if (_diagStream) _diagStream->print(str); }
-  void diagPrintLn(const __FlashStringHelper *str) { if (_diagStream) _diagStream->println(str); }
-  void diagPrint(int i, int base=DEC) { if (_diagStream) _diagStream->print(i, base); }
-  void diagPrintLn(int i, int base=DEC) { if (_diagStream) _diagStream->println(i, base); }
-  void diagPrint(unsigned int u, int base=DEC) { if (_diagStream) _diagStream->print(u, base); }
-  void diagPrintLn(unsigned int u, int base=DEC) { if (_diagStream) _diagStream->println(u, base); }
-  void diagPrint(char c) { if (_diagStream) _diagStream->print(c); }
-  void diagPrintLn(char c) { if (_diagStream) _diagStream->println(c); }
-#else
-  void diagPrint(const char *str) {}
-  void diagPrintLn(const char *str) {}
-  void diagPrint(const __FlashStringHelper *str) {}
-  void diagPrintLn(const __FlashStringHelper *str) {}
-  void diagPrint(int i, int base=DEC) {}
-  void diagPrintLn(int i, int base=DEC) {}
-  void diagPrint(unsigned int u, int base=DEC) {}
-  void diagPrintLn(unsigned int u, int base=DEC) {}
-  void diagPrint(char c) {}
-  void diagPrintLn(char c) {}
-#endif
 
 private:
   Stream *_myStream;

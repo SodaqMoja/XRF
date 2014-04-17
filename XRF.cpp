@@ -24,6 +24,14 @@
 #include <Arduino.h>
 #include "XRF.h"
 
+#if ENABLE_XRF_DIAG
+#define diagPrint(...) { if (_diagStream) _diagStream->print(__VA_ARGS__); }
+#define diagPrintLn(...) { if (_diagStream) _diagStream->println(__VA_ARGS__); }
+#else
+#define diagPrint(...)
+#define diagPrintLn(...)
+#endif
+
 XRF::XRF()
 {
   _myStream = 0;
