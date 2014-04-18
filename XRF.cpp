@@ -331,7 +331,8 @@ uint8_t XRF::receiveDataNoAck(char *source, size_t sourceSize,
           //diagPrint(F("receiveDataNoAck checksum : ")); diagPrintLn(crc == crc1 ? "OK" : "not OK");
           if (crc1 == crc) {
             // Yes, the checksum is correct.
-            _failedCounter = 0;
+            // ??? shall we reset the counter?
+            //_failedCounter = 0;
 
             // Strip the prefix from the reply
             strcpy(data, data + len);
